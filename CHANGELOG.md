@@ -10,4 +10,5 @@ First public release.
 - Zero-dependency `HookApp` implementing all six lifecycle hooks; `/validate` handlers can now reject a build by returning False.
 - `mvm` CLI including `quotas` (applied versus published) and `cost` (session pricing).
 - Benchmark harness and the measured numbers behind the docs.
+- Credits to Alexey Vidanov's lambda-microvm-starter, the project that inspired this one.
 - Unit tests for throttling, endpoint retries, fleet scale-down selection, config, and hooks; GitHub Actions CI on Python 3.9 to 3.12.

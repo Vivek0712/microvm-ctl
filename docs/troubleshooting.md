@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Errors we hit on the live service, what each one meant, and what fixed it.
+Errors we hit on the live service, what each one meant, and what fixed it. Alexey Vidanov's [lambda-microvm-starter troubleshooting guide](https://github.com/vidanov/lambda-microvm-starter/blob/main/TROUBLESHOOTING.md) covers twenty more from the deploy-a-web-app side and is worth reading alongside this page.
 
 ## `ServiceQuotaExceededException` on `RunMicrovm`
 

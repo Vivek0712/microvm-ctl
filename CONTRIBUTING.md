@@ -29,6 +29,17 @@ Check `mvm quotas` first. Fresh accounts have 8 GB of total microVM memory, whic
 - Numbers in the docs are measured. If you change something that affects latency or cost, re-run the harness and update the tables with the new output.
 - Docs are written as one paragraph per line with plain ASCII punctuation, so they paste cleanly into other publishing tools.
 
+## Releasing
+
+Releases go to PyPI through trusted publishing, so no token lives in the repo. Bump `version` in `pyproject.toml` and the top entry in `CHANGELOG.md`, commit, then tag and push:
+
+```console
+git tag v0.1.0
+git push origin main --tags
+```
+
+The `publish` workflow builds the sdist and wheel and uploads them. The first release needs the pending publisher registered once on pypi.org (owner `Vivek0712`, repository `microvm-ctl`, workflow `publish.yml`, environment `pypi`).
+
 ## Reporting a problem
 
 Open an issue with the `mvm` command or SDK call, the region, the applied quotas from `mvm quotas`, and the relevant lines from `mvm logs <image>`. Strip account ids and endpoint hostnames if you prefer.
