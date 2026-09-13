@@ -5,7 +5,7 @@ This page takes an account with nothing in it to a microVM answering authenticat
 ## 1. Install
 
 ```console
-pip install git+https://github.com/Vivek0712/microvm-ctl
+pip install microvm-ctl
 mvm --version
 ```
 

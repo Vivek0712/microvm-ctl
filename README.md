@@ -3,11 +3,12 @@
 **The control and execution plane for [AWS Lambda MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/lambda-microvms-guide.html).** Build a snapshot image from a Dockerfile, launch Firecracker microVMs in seconds, scale a fleet inside the quotas your account actually has, call into every VM over its authenticated endpoint, and watch the whole thing live. One Python SDK, one `mvm` command.
 
 [![ci](https://github.com/Vivek0712/microvm-ctl/actions/workflows/ci.yml/badge.svg)](https://github.com/Vivek0712/microvm-ctl/actions/workflows/ci.yml)
+[![pypi](https://img.shields.io/pypi/v/microvm-ctl)](https://pypi.org/project/microvm-ctl/)
 ![python](https://img.shields.io/badge/python-3.9%20to%203.12-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
 ```console
-pip install git+https://github.com/Vivek0712/microvm-ctl   # PyPI release pending
+pip install microvm-ctl
 
 mvm bootstrap                              # one time: S3 artifact bucket + build/execution IAM roles
 mvm image build my-sandbox ./my-app        # Dockerfile at ./my-app root -> runnable snapshot
