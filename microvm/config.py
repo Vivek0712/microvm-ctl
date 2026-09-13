@@ -46,7 +46,9 @@ class PlaneConfig:
     """Everything the control plane needs to know about one deployment."""
 
     region: str = field(default_factory=lambda: os.environ.get("MVM_REGION", "us-east-1"))
-    profile: str | None = field(default_factory=lambda: os.environ.get("MVM_PROFILE") or os.environ.get("AWS_PROFILE"))
+    profile: str | None = field(
+        default_factory=lambda: os.environ.get("MVM_PROFILE") or os.environ.get("AWS_PROFILE")
+    )
     artifact_bucket: str | None = field(default_factory=lambda: os.environ.get("MVM_ARTIFACT_BUCKET"))
     build_role_arn: str | None = field(default_factory=lambda: os.environ.get("MVM_BUILD_ROLE_ARN"))
     execution_role_arn: str | None = field(default_factory=lambda: os.environ.get("MVM_EXECUTION_ROLE_ARN"))

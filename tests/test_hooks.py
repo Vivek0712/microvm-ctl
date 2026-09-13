@@ -1,7 +1,6 @@
 """Local tests for the in-VM hook server (no AWS needed): run with `pytest`."""
 
 import json
-import threading
 import urllib.request
 
 import pytest

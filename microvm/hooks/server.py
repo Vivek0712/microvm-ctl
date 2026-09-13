@@ -61,7 +61,8 @@ class HookApp:
 
     def on_validate(self, fn):
         """Exercise real code paths here: Lambda records the snapshot regions the
-        validate run touches and prefetches them, cutting launch latency."""
+        validate run touches and prefetches them, cutting launch latency.
+        Return False (or raise) to fail the build."""
         self._hooks["validate"] = fn
         return fn
 
@@ -94,6 +95,14 @@ class HookApp:
             ok = fn(ctx) if fn else True
             self.ready = bool(ok) if fn else True
             return 200 if self.ready else 503
+        if name == "validate":
+            fn = self._hooks.get("validate")
+            if fn is None:
+                return 200
+            ok = fn(ctx)
+            # None (no return statement) means "ran fine"; an explicit False
+            # rejects the image version so a bad build never becomes ACTIVE.
+            return 200 if ok is None or ok else 500
         if name == "run":
             self.microvm_id = ctx.get("microvmId") or os.environ.get("AWS_MICROVM_ID")
             self.run_payload = ctx.get("runHookPayload")

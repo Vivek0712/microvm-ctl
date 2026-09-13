@@ -35,7 +35,7 @@ def _ensure_role(iam, name: str, policy_doc: dict) -> str:
         arn = iam.create_role(
             RoleName=name,
             AssumeRolePolicyDocument=json.dumps(TRUST),
-            Description="awesome-microvm control plane",
+            Description="microvm-ctl control plane",
         )["Role"]["Arn"]
         time.sleep(8)  # IAM eventual consistency before first use
     iam.put_role_policy(
@@ -44,7 +44,12 @@ def _ensure_role(iam, name: str, policy_doc: dict) -> str:
     return arn
 
 
-def bootstrap(cfg: PlaneConfig, prefix: str = "awesome-microvm") -> dict:
+def bootstrap(cfg: PlaneConfig, prefix: str = "microvm-ctl") -> dict:
+    """Create (idempotently) the artifact bucket and the two IAM roles.
+
+    Returns the three values the rest of the plane needs, ready to export as
+    MVM_ARTIFACT_BUCKET / MVM_BUILD_ROLE_ARN / MVM_EXECUTION_ROLE_ARN.
+    """
     sts = lambda_client("sts", cfg.region, cfg.profile)
     account = sts.get_caller_identity()["Account"]
     bucket = cfg.artifact_bucket or f"{prefix}-artifacts-{account}-{cfg.region}"

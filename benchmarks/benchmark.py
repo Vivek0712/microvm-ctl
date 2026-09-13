@@ -1,11 +1,11 @@
-"""Benchmark protocol for the awesome-microvm plane.
+"""Benchmark protocol for microvm-ctl.
 
 Measures what AWS doesn't publish: launch latency, resume latency, warm
 request latency, suspend/resume state fidelity, and scale-out wall time —
 then prices the session with the CostModel. Emits JSON + an SVG terminal
 snapshot per section (used in the blogs).
 
-    MVM_PROFILE=heisenberg python3 benchmarks/benchmark.py --image code-sandbox --launches 5
+    MVM_PROFILE=my-profile python3 benchmarks/benchmark.py --image code-sandbox --launches 5
 """
 
 from __future__ import annotations
@@ -73,8 +73,8 @@ def main():
             fm.terminate(vm.microvm_id)
         else:
             vms.append(vm)
-    fb = [l["first_byte_s"] for l in launches]
-    rn = [l["running_s"] for l in launches]
+    fb = [sample["first_byte_s"] for sample in launches]
+    rn = [sample["running_s"] for sample in launches]
     out["launch"] = {
         "samples": launches,
         "running_p50_s": round(statistics.median(rn), 2),
@@ -176,8 +176,10 @@ def main():
         "2 h active + 22 h suspended": model.session(2 * 3600, 22 * 3600, cycles=2),
     }
     t = Table(header_style="bold magenta")
-    t.add_column("scenario"); t.add_column("total", justify="right")
-    t.add_column("always-on", justify="right"); t.add_column("saved", justify="right")
+    t.add_column("scenario")
+    t.add_column("total", justify="right")
+    t.add_column("always-on", justify="right")
+    t.add_column("saved", justify="right")
     for name, s in scenarios.items():
         t.add_row(name, f"${s['total_usd']:.4f}", f"${s['vs_always_on_usd']:.4f}",
                   f"[green]{s['savings_pct']}%[/]")

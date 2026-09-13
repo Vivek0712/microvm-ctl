@@ -20,7 +20,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from microvm.client import microvm_client, lambda_client, image_arn
+from microvm.client import image_arn, lambda_client, microvm_client
 from microvm.config import PlaneConfig
 
 TERMINAL_BUILD = {"SUCCESSFUL", "FAILED"}

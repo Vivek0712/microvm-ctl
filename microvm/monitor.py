@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from microvm.client import lambda_client, microvm_client, image_arn
+from microvm.client import image_arn, lambda_client, microvm_client
 from microvm.config import PlaneConfig
 
 # us-east-1 launch rates. Re-verify against the live pricing page.

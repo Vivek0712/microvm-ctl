@@ -21,7 +21,7 @@ import time
 import requests
 
 from microvm.client import microvm_client
-from microvm.config import AUTH_HEADER, PORT_HEADER, PlaneConfig
+from microvm.config import PORT_HEADER, PlaneConfig
 
 
 class EndpointError(RuntimeError):
@@ -83,12 +83,15 @@ class EndpointClient:
         """HTTP request to the microVM. 502s are retried for `resume_patience`
         seconds to ride out an auto-resume; 429s back off with jitter."""
         url = f"https://{self.endpoint}{path if path.startswith('/') else '/' + path}"
-        headers = kwargs.pop("headers", {}) | self._auth_headers()
+        base_headers = dict(kwargs.pop("headers", None) or {})
         if port and port != 8080:
-            headers[PORT_HEADER] = str(port)
+            base_headers[PORT_HEADER] = str(port)
         started, delay = time.time(), 0.5
         last: requests.Response | None = None
         for attempt in range(1, max_attempts + 1):
+            # Auth headers are merged per attempt so a re-minted token after a
+            # 403 is picked up without losing the caller's own headers.
+            headers = {**base_headers, **self._auth_headers()}
             last = self.http.request(method, url, headers=headers, timeout=timeout, **kwargs)
             if last.status_code == 429:
                 time.sleep(delay + random.uniform(0, delay))
@@ -97,12 +100,10 @@ class EndpointClient:
             if last.status_code == 502 and time.time() - started < resume_patience:
                 time.sleep(2)
                 continue
-            if last.status_code == 403:
-                # token may have been revoked/expired server-side; re-mint once
+            if last.status_code == 403 and attempt < max_attempts:
+                # token may have been revoked/expired server-side; re-mint and retry
                 self._token = None
-                if attempt < max_attempts:
-                    headers = kwargs.get("headers", {}) | self._auth_headers()
-                    continue
+                continue
             return last
         return last  # type: ignore[return-value]
 

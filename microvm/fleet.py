@@ -14,9 +14,10 @@ from __future__ import annotations
 import concurrent.futures as futures
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 
-from microvm.client import microvm_client, image_arn
-from microvm.config import PlaneConfig, TPS
+from microvm.client import image_arn, microvm_client
+from microvm.config import TPS, PlaneConfig
 from microvm.throttle import Throttled
 
 ACTIVE_STATES = {"PENDING", "RUNNING", "SUSPENDING", "SUSPENDED"}
@@ -28,11 +29,17 @@ class Microvm:
     state: str
     image_arn: str
     image_version: str
-    started_at: object = None
+    started_at: object = None  # datetime from the API, or None
     endpoint: str | None = None
 
+    @property
+    def started_epoch(self) -> float:
+        """startedAt as a POSIX timestamp (0.0 when unknown) - safe to sort on."""
+        ts = getattr(self.started_at, "timestamp", None)
+        return float(ts()) if callable(ts) else 0.0
+
     @classmethod
-    def from_api(cls, d: dict) -> "Microvm":
+    def from_api(cls, d: dict) -> Microvm:
         return cls(
             microvm_id=d["microvmId"],
             state=d["state"],
@@ -92,15 +99,27 @@ def applied_quotas(config: PlaneConfig) -> dict[str, float]:
 class FleetManager:
     """Low-level lifecycle operations, one instance per (account, region)."""
 
+    #: fraction of the applied TPS quota the token buckets are allowed to use
+    QUOTA_HEADROOM = 0.8
+
     def __init__(self, config: PlaneConfig, quota_aware: bool = True):
         self.cfg = config
         self.api = microvm_client(config.region, config.profile)
         self.quotas = applied_quotas(config) if quota_aware else {}
-        tps = lambda op: (self.quotas.get(op) or TPS[op]) * 0.8
-        self._run = Throttled(self.api.run_microvm, tps("RunMicrovm"))
-        self._suspend = Throttled(self.api.suspend_microvm, tps("SuspendMicrovm"))
-        self._resume = Throttled(self.api.resume_microvm, tps("ResumeMicrovm"))
-        self._terminate = Throttled(self.api.terminate_microvm, tps("TerminateMicrovm"))
+        self._run = Throttled(self.api.run_microvm, self.tps("RunMicrovm"))
+        self._suspend = Throttled(self.api.suspend_microvm, self.tps("SuspendMicrovm"))
+        self._resume = Throttled(self.api.resume_microvm, self.tps("ResumeMicrovm"))
+        self._terminate = Throttled(self.api.terminate_microvm, self.tps("TerminateMicrovm"))
+
+    def tps(self, op: str) -> float:
+        """Effective rate for one mutating API: applied quota (or the published
+        default when Service Quotas is unavailable) times QUOTA_HEADROOM."""
+        return (self.quotas.get(op) or TPS[op]) * self.QUOTA_HEADROOM
+
+    @property
+    def memory_quota_gb(self) -> float | None:
+        """Applied 'max allocated microVM memory' quota, if Service Quotas answered."""
+        return self.quotas.get("MaxMemoryGb")
 
     # -- single VM ---------------------------------------------------------------
     def run(
@@ -174,7 +193,11 @@ class Fleet:
     version: str | None = None
     idle_policy: IdlePolicy = field(default_factory=IdlePolicy)
     max_duration: int | None = None
-    run_payload_factory: object = None  # callable (index:int) -> str, for per-VM payloads
+    #: called with the launch index (0..n-1) to produce that VM's runHookPayload
+    run_payload_factory: Callable[[int], str] | None = None
+    ingress: list[str] | None = None
+    egress: list[str] | None = None
+    execution_role: str | None = None
     _pool: futures.ThreadPoolExecutor = field(
         default_factory=lambda: futures.ThreadPoolExecutor(max_workers=8), repr=False
     )
@@ -211,28 +234,31 @@ class Fleet:
                 ]
             return launched
         if delta < 0:
-            victims = sorted(
-                current,
-                key=lambda vm: (vm.state != "SUSPENDED", vm.started_at or 0),
-                reverse=False,
-            )
-            # SUSPENDED first, then youngest RUNNING (sort puts suspended first,
-            # oldest first — so take suspended, then from the tail of running).
-            suspended = [v for v in victims if v.state == "SUSPENDED"]
-            running = [v for v in victims if v.state != "SUSPENDED"]
-            running.sort(key=lambda vm: vm.started_at or 0, reverse=True)  # youngest first
-            for vm in (suspended + running)[: -delta]:
+            for vm in self.scale_down_victims(current, -delta):
                 self.manager.terminate(vm.microvm_id)
         return []
 
+    @staticmethod
+    def scale_down_victims(members: list[Microvm], count: int) -> list[Microvm]:
+        """Pick `count` members to terminate: every SUSPENDED VM first (storage
+        cost only, but they hold memory quota), then RUNNING VMs youngest first
+        so the oldest, warmest members survive."""
+        suspended = [v for v in members if v.state == "SUSPENDED"]
+        running = [v for v in members if v.state != "SUSPENDED"]
+        running.sort(key=lambda vm: vm.started_epoch, reverse=True)  # youngest first
+        return (suspended + running)[:count]
+
     def _launch_one(self, index: int) -> Microvm:
-        payload = self.run_payload_factory(index) if callable(self.run_payload_factory) else None
+        payload = self.run_payload_factory(index) if self.run_payload_factory else None
         return self.manager.run(
             self.image,
             version=self.version,
             idle_policy=self.idle_policy,
             run_payload=payload,
             max_duration=self.max_duration,
+            ingress=self.ingress,
+            egress=self.egress,
+            execution_role=self.execution_role,
         )
 
     def suspend_all(self) -> int:
@@ -258,7 +284,7 @@ class Fleet:
         now = time.time()
         reaped = []
         for vm in self.members():
-            started = vm.started_at.timestamp() if hasattr(vm.started_at, "timestamp") else None
+            started = vm.started_epoch
             if started and now - started > max_age_seconds:
                 self.manager.terminate(vm.microvm_id)
                 reaped.append(vm.microvm_id)
