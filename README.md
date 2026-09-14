@@ -137,7 +137,13 @@ The fastest way to understand the plane is to read the apps built on it. The com
 | [pdf-service](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/pdf-service) | untrusted HTML rendered in the VM; idle policy sleeps it between bursts |
 | [multi-tenant-agents](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/multi-tenant-agents) | one VM per tenant, identity via `runHookPayload`, `run_payload_factory` on a `Fleet` |
 
-The three-part article series **Building on AWS Lambda MicroVMs** walks through them: part 1 is this plane and its measurements, part 2 is the first seven workloads, and part 3 is the multi-tenant finale with a decision guide. The series and a long-form deep dive per example live under [awesome-microvm/blog](https://github.com/Vivek0712/awesome-microvm/tree/main/blog).
+The three-part article series **Building on AWS Lambda MicroVMs** on the AWS Builder Center walks through them:
+
+1. [Control and scale AWS Lambda MicroVMs with microvm-ctl](https://builder.aws.com/content/3JIDTpz0ZgatSBv24drra3gEod9/control-and-scale-aws-lambda-microvms-with-microvm-ctl): this plane and its measurements.
+2. [Seven workloads Lambda could never run, until MicroVMs](https://builder.aws.com/content/3JJ2oNWY9EsZzivMMx044cSlrFQ/seven-workloads-lambda-could-never-run-until-microvms): the first seven examples through build, run, cost, and gotchas.
+3. [A kernel for every customer: scaling AI agents to 1,000 tenants on AWS Lambda MicroVMs with microvm-ctl](https://builder.aws.com/content/3JJ7tASPSSUUTrcpWnWtxOuu8g3/a-kernel-for-every-customer-scaling-ai-agents-to-1000-tenants-on-aws-lambda-microvms-with-microvm-ctl): the multi-tenant finale with the decision guide.
+
+The article sources and a long-form deep dive per example live under [awesome-microvm/blog](https://github.com/Vivek0712/awesome-microvm/tree/main/blog).
 
 ## Requirements and regions
 
