@@ -18,6 +18,8 @@ mvm scale my-sandbox 10                    # converge the fleet, throttled to yo
 mvm top --watch                            # live state table
 ```
 
+To see it used for real first, jump to [the eight examples](#see-it-working-eight-examples-and-the-article-series).
+
 ## Why this exists
 
 Lambda MicroVMs exposes the primitive under Lambda itself: a Firecracker VM with a full AL2023 userland, a dedicated HTTPS endpoint, and a lifecycle you control (run, suspend, resume, terminate). The service deliberately stops there. There is no load balancer (one endpoint per VM), no fleet abstraction, no token management, no dashboard, and a fresh account runs quotas far below the published defaults. microvm-ctl fills that gap.
@@ -120,9 +122,22 @@ app.serve(port=8080)
 - [Quotas and cost](docs/quotas-and-cost.md): the quota walls, what counts against them, and the cost model with worked examples.
 - [Troubleshooting](docs/troubleshooting.md): the errors we hit on the live service and what each one meant.
 
-## Examples and the article series
+## See it working: eight examples and the article series
 
-Eight production-shaped apps run on this plane: a code execution sandbox, an AI code runner with a self-repair loop, an agent evaluation fleet, a stateful notebook kernel, sandboxed DuckDB analytics, an ephemeral CI runner, an HTML to PDF service, and multi-tenant AI agents. Each has a Dockerfile, a single-file app, a recorded live transcript, and an article in the series **Building on AWS Lambda MicroVMs**. They live in the companion repo [awesome-microvm](https://github.com/Vivek0712/awesome-microvm).
+The fastest way to understand the plane is to read the apps built on it. The companion repo [awesome-microvm](https://github.com/Vivek0712/awesome-microvm) holds eight production-shaped examples, each a Dockerfile plus a single-file app, deployed and recorded on the live service:
+
+| Example | What it shows |
+|---|---|
+| [code-sandbox](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/code-sandbox) | untrusted or AI-written Python per session; state persists across calls and suspend |
+| [ai-code-runner](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/ai-code-runner) | Bedrock writes code, the VM runs it, tracebacks drive a self-repair loop |
+| [agent-eval](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/agent-eval) | `Fleet.scale_to` fan-out over byte-identical clones, scoreboard, drain |
+| [notebook](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/notebook) | a kernel whose namespace survives suspend and resume with the same PID |
+| [data-analytics](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/data-analytics) | DuckDB over S3 through the execution role; bulk data off the endpoint |
+| [ci-runner](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/ci-runner) | clone, test, report, terminate; `--max-duration` as the runaway cap |
+| [pdf-service](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/pdf-service) | untrusted HTML rendered in the VM; idle policy sleeps it between bursts |
+| [multi-tenant-agents](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/multi-tenant-agents) | one VM per tenant, identity via `runHookPayload`, `run_payload_factory` on a `Fleet` |
+
+The three-part article series **Building on AWS Lambda MicroVMs** walks through them: part 1 is this plane and its measurements, part 2 is the first seven workloads, and part 3 is the multi-tenant finale with a decision guide. The series and a long-form deep dive per example live under [awesome-microvm/blog](https://github.com/Vivek0712/awesome-microvm/tree/main/blog).
 
 ## Requirements and regions
 
