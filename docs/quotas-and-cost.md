@@ -2,7 +2,7 @@
 
 ## The quota walls
 
-A fresh account does not get the published defaults. Ours, measured with `mvm quotas` on the day we started:
+A fresh account does not get the published defaults. Ours, measured with `mvm quotas` on the day I started:
 
 | Quota | Published default | Applied to a fresh account |
 |---|---|---|
@@ -16,12 +16,12 @@ A fresh account does not get the published defaults. Ours, measured with `mvm qu
 
 Two things count against the memory quota that you might not expect:
 
-- **Image-build VMs.** Five concurrent 2 GB builds consumed 10 GB of a quota we did not have, and the next launch failed with `ServiceQuotaExceededException`.
+- **Image-build VMs.** Five concurrent 2 GB builds consumed 10 GB of a quota I did not have, and the next launch failed with `ServiceQuotaExceededException`.
 - **TERMINATING VMs.** For a short window after `TerminateMicrovm` the memory is still allocated. Tests that churn VMs quickly must let terminations settle.
 
 Both lessons are encoded in the plane. `FleetManager` reads the applied values at startup and throttles to 80% of them. `Throttled` waits much longer on `ServiceQuotaExceededException` than on a TPS throttle, because capacity frees up on the order of minutes. `Fleet.scale_to` terminates suspended members first on the way down, and the benchmark harness waits for terminations to settle before its scale section.
 
-We filed a `RunMicrovm` raise from 1 to 5 per second with a single `request-service-quota-increase` call. The case closed with the applied value still at 1 per second, so every fleet number in this repo was produced under that limit. File yours on day one and plan for the answer to take time.
+I filed a `RunMicrovm` raise from 1 to 5 per second with a single `request-service-quota-increase` call. The case closed with the applied value still at 1 per second, so every fleet number in this repo was produced under that limit. File yours on day one and plan for the answer to take time.
 
 ## What the rates are
 

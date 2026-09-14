@@ -31,7 +31,7 @@ Billing by state: RUNNING is vCPU plus memory per second. SUSPENDED is snapshot 
 
 **There is no service-side load balancer.** One endpoint per VM means horizontal scale is more `RunMicrovm` calls, and routing across the fleet is the control plane's job. `Fleet` and `EndpointClient` are the primitives; the eval harness in the companion repo shows round-robin over N clients.
 
-**Throttle to the applied quota, not the published one.** New accounts run reduced profiles. Our fresh account had `RunMicrovm` at 1 per second and 8 GB of total memory against published defaults of 5 per second and 1,024 GB. `FleetManager` reads the applied values from Service Quotas at startup and runs every mutating call through a token bucket at 80% of them, with jittered exponential backoff behind the bucket.
+**Throttle to the applied quota, not the published one.** New accounts run reduced profiles. My fresh account had `RunMicrovm` at 1 per second and 8 GB of total memory against published defaults of 5 per second and 1,024 GB. `FleetManager` reads the applied values from Service Quotas at startup and runs every mutating call through a token bucket at 80% of them, with jittered exponential backoff behind the bucket.
 
 **Memory quota is the real ceiling, and it counts more than you think.** RUNNING, SUSPENDED, TERMINATING, and image-build VMs all count. A fleet that suspends instead of terminating still holds quota, so `scale_to` terminates suspended members first on the way down. The benchmark harness waits for terminations to settle before the scale section for the same reason.
 

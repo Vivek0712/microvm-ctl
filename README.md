@@ -120,7 +120,7 @@ app.serve(port=8080)
 - [Architecture](docs/architecture.md): the two planes, the lifecycle state machine, the fleet design decisions, and the security model.
 - [The hook contract](docs/hooks.md): what each hook is for and what breaks when you ignore it.
 - [Quotas and cost](docs/quotas-and-cost.md): the quota walls, what counts against them, and the cost model with worked examples.
-- [Troubleshooting](docs/troubleshooting.md): the errors we hit on the live service and what each one meant.
+- [Troubleshooting](docs/troubleshooting.md): the errors I hit on the live service and what each one meant.
 
 ## See it working: eight examples and the article series
 
@@ -145,7 +145,7 @@ Python 3.9 or newer on the machine running the plane. The VMs themselves are ARM
 
 ## Credits and inspiration
 
-This project grew out of [lambda-microvm-starter](https://github.com/vidanov/lambda-microvm-starter) by [Alexey Vidanov](https://github.com/vidanov), the one-command on-ramp that deploys any Dockerfile to a Lambda MicroVM behind a public CloudFront URL. His starter kit and its troubleshooting notes were the first working map of the service we had, and several of the gotchas documented here were first written down there. microvm-ctl takes the next step from one deployed app to fleets, tokens, quotas, and cost, and we are grateful for the ground he covered first.
+This project grew out of [lambda-microvm-starter](https://github.com/vidanov/lambda-microvm-starter) by [Alexey Vidanov](https://github.com/vidanov), the one-command on-ramp that deploys any Dockerfile to a Lambda MicroVM behind a public CloudFront URL. His starter kit and its troubleshooting notes were the first working map of the service I had, and several of the gotchas documented here were first written down there. microvm-ctl takes the next step from one deployed app to fleets, tokens, quotas, and cost, and I am grateful for the ground he covered first.
 
 ## Contributing
 

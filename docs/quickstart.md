@@ -134,4 +134,4 @@ Scale-out launches through the token bucket. Scale-down terminates suspended mem
 
 - The eight example apps in [awesome-microvm](https://github.com/Vivek0712/awesome-microvm) show the patterns that matter in practice: per-session sandboxes, fan-out fleets, stateful kernels, and multi-tenant identity through `runHookPayload`.
 - [The hook contract](hooks.md) explains what to do in each hook and the snapshot rules behind it.
-- [Troubleshooting](troubleshooting.md) lists the errors we hit and what they meant.
+- [Troubleshooting](troubleshooting.md) lists the errors I hit and what they meant.
