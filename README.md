@@ -8,7 +8,7 @@
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
 ```console
-pip install microvm-ctl
+pip install microvm-ctl          # https://pypi.org/project/microvm-ctl/
 
 mvm bootstrap                              # one time: S3 artifact bucket + build/execution IAM roles
 mvm image build my-sandbox ./my-app        # Dockerfile at ./my-app root -> runnable snapshot
