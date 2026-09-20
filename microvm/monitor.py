@@ -10,10 +10,14 @@ one-shot jobs, and snapshot size discipline.
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 
 from microvm.client import image_arn, lambda_client, microvm_client
 from microvm.config import PlaneConfig
+from microvm.endpoint import EndpointClient
+from microvm.fleet import FleetManager
 
 # us-east-1 launch rates. Re-verify against the live pricing page.
 RATE_VCPU_SECOND = 0.0000276944
@@ -60,11 +64,100 @@ class CostModel:
         }
 
 
+def job_row(microvm_id: str, snap: dict) -> dict:
+    """Reduce one hook-runtime `/status` snapshot to the fields a fleet table needs."""
+    lease = snap.get("lease") or {}
+    err = lease.get("error")
+    return {
+        "microvm_id": microvm_id,
+        "lease_id": lease.get("id"),
+        "phase": snap.get("phase"),
+        "progress": snap.get("progress") or {"done": 0, "total": None},
+        "elapsed_s": snap.get("elapsed_s"),
+        "done": bool(lease.get("done")) if lease else snap.get("phase") == "done",
+        "lost": bool(lease.get("lost")),
+        "error": f"{err.get('error_type')}: {err.get('message')}" if isinstance(err, dict) else None,
+    }
+
+
+def job_summary(rows: list[dict]) -> dict:
+    """The footer under a fleet job table: done D/N, running R, lost L, slowest member."""
+    answered = [r for r in rows if "phase" in r]
+    done = [r for r in answered if r["done"]]
+    lost = [r for r in answered if r["lost"] and not r["done"]]
+    running = [r for r in answered if not r["done"] and not r["lost"]]
+    slowest = max(running or answered, key=lambda r: r.get("elapsed_s") or 0, default=None)
+    return {
+        "total": len(rows),
+        "done": len(done),
+        "running": len(running),
+        "lost": len(lost),
+        "failed": sum(1 for r in done if r["error"]),
+        "unanswered": len(rows) - len(answered),
+        "slowest": (
+            {k: slowest[k] for k in ("microvm_id", "phase", "elapsed_s")} if slowest else None
+        ),
+    }
+
+
 class FleetMonitor:
+    #: Seconds one member gets to answer `/status` before its row becomes an error.
+    MEMBER_TIMEOUT_S = 5.0
+
     def __init__(self, config: PlaneConfig):
         self.cfg = config
         self.api = microvm_client(config.region, config.profile)
         self.logs = lambda_client("logs", config.region, config.profile)
+        self._ep_clients: dict = {}
+
+    # -- fleet job: one /status per RUNNING member ---------------------------------
+    def endpoint_client(self, vm, port: int = 8080, ttl: int = 15) -> EndpointClient:
+        """One cached EndpointClient per (member, port, ttl): the token is minted once per VM
+        and reused across polls until ~80% of its TTL."""
+        key = (vm.microvm_id, port, ttl)
+        client = self._ep_clients.get(key)
+        if client is None:
+            client = EndpointClient(self.cfg, vm.microvm_id, endpoint=vm.endpoint, ports=[port],
+                                    token_ttl_minutes=ttl)
+            self._ep_clients[key] = client
+        return client
+
+    def _pool(self) -> ThreadPoolExecutor:
+        """One executor per monitor, reused across polls so a slow member never leaks a thread per call."""
+        if getattr(self, "_status_pool", None) is None:
+            self._status_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="job-status")
+        return self._status_pool
+
+    def job_status(self, image: str, *, port: int = 8080, ttl: int = 15) -> list[dict]:
+        """One row per RUNNING member of `image`, from the hook runtime's `GET /status`:
+        `{"microvm_id", "lease_id", "phase", "progress", "elapsed_s", "done", "lost", "error"}`,
+        or `{"microvm_id", "error"}` for a member that does not answer within MEMBER_TIMEOUT_S.
+        Members are polled in parallel (8 threads) and in list order; one bad member never
+        fails the sweep."""
+        members = [vm for vm in FleetManager(self.cfg).list(image) if vm.state == "RUNNING"]
+        if not members:
+            return []
+
+        def one(vm) -> dict:
+            client = self.endpoint_client(vm, port, ttl)
+            # one attempt, bounded by the member timeout: a dead member must not pin a worker
+            return job_row(vm.microvm_id, client.status(timeout=self.MEMBER_TIMEOUT_S, max_attempts=1))
+
+        pool = self._pool()
+        futs = [pool.submit(one, vm) for vm in members]
+        deadline = time.time() + self.MEMBER_TIMEOUT_S
+        rows = []
+        for vm, fut in zip(members, futs):
+            try:
+                rows.append(fut.result(timeout=max(0.0, deadline - time.time())))
+            except FutureTimeout:
+                rows.append({"microvm_id": vm.microvm_id,
+                             "error": f"no answer on /status within {self.MEMBER_TIMEOUT_S:g} s"})
+            except Exception as e:
+                rows.append({"microvm_id": vm.microvm_id, "error": f"{type(e).__name__}: {str(e)[:200]}"})
+        for fut in futs:
+            fut.cancel()  # not-yet-started polls of members that already timed out
+        return rows
 
     def snapshot(self, image: str | None = None) -> dict:
         """Fleet-wide state counts + members, one paginated ListMicrovms sweep."""

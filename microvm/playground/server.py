@@ -49,6 +49,8 @@ from microvm.monitor import (
     RATE_VCPU_SECOND,
     CostModel,
     FleetMonitor,
+    job_row,
+    job_summary,
 )
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -232,11 +234,12 @@ def _iso(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ts)) + "Z"
 
 
-def _sample_job(microvm_id: str, since: int | None = None) -> dict:
+def _sample_job(microvm_id: str, since: int | None = None, shift: float = 0.0) -> dict:
     """What the hook runtime's `GET /status` would answer, for dry run without a VM.
-    Same keys as `microvm.hooks.server.Job.snapshot`."""
+    Same keys as `microvm.hooks.server.Job.snapshot`. `shift` moves this VM's clock back
+    so several sample members sit in different phases."""
     cycle = sum(d for _, d in _SAMPLE_PHASES)
-    now = time.time()
+    now = time.time() - shift
     t0 = now - now % cycle
     elapsed = now - t0
     spans, at = [], 0
@@ -295,6 +298,13 @@ def _sample_job(microvm_id: str, since: int | None = None) -> dict:
         "microvm_id": microvm_id,
         "seq": lines[-1]["seq"],
     }
+
+
+def _sample_fleet_jobs(region: str, image: str) -> list[dict]:
+    """`FleetMonitor.job_status` over the sample fleet: one row per RUNNING sample member of
+    `image`, each on its own point of the looping sample job."""
+    members = [v for v in _sample_vms(region) if v.state == "RUNNING" and v.image_arn.split(":")[-1] == image]
+    return [job_row(v.microvm_id, _sample_job(v.microvm_id, shift=17.0 * i)) for i, v in enumerate(members)]
 
 
 class _SampleAwareManager(FleetManager):
@@ -358,7 +368,9 @@ class Playground:
         self.jobs: dict[str, Job] = {}
         self._traced: set = set()
         self._ep_clients: dict = {}
+        self._monitor: tuple | None = None
         self._lock = threading.RLock()
+        self.persist = False  # only a serving process writes state; tests and one-off scripts never do
         self._ensure_trace()
         self._load_state()
 
@@ -445,6 +457,15 @@ class Playground:
     def fm(self) -> FleetManager:
         return _SampleAwareManager(self.cfg) if self.dry_run else FleetManager(self.cfg)
 
+    def monitor(self) -> FleetMonitor:
+        """One FleetMonitor per (profile, region), so its per-VM endpoint clients (and their
+        tokens) survive across fleet job polls."""
+        key = (self.cfg.profile, self.cfg.region)
+        with self._lock:
+            if self._monitor is None or self._monitor[0] != key:
+                self._monitor = (key, FleetMonitor(self.cfg))
+            return self._monitor[1]
+
     def sample_endpoint(self, microvm_id: str) -> str:
         for vm in _sample_vms(self.cfg.region):
             if vm.microvm_id == microvm_id:
@@ -485,6 +506,8 @@ class Playground:
         }
 
     def save_state(self) -> None:
+        if not self.persist:
+            return
         try:
             self.STATE_DIR.mkdir(parents=True, exist_ok=True)
             jobs = sorted(self.jobs.values(), key=lambda j: j.started, reverse=True)[:100]
@@ -722,6 +745,7 @@ def _reset_aws_sessions(pg: Playground) -> None:
     _client._accounts.clear()
     with pg._lock:
         pg._ep_clients.clear()
+        pg._monitor = None
     pg._traced.clear()
     pg._ensure_trace()
 
@@ -1214,22 +1238,199 @@ def _follow_status(pg: Playground, job: Job, vm, timeout: float = 300.0) -> dict
     return snap
 
 
+def _json_object(b: dict, key: str) -> dict:
+    """A JSON-object field that may arrive parsed or as a string; empty means {}."""
+    v = b.get(key)
+    if isinstance(v, str):
+        try:
+            v = json.loads(v) if v.strip() else {}
+        except ValueError as e:
+            raise ApiError(f"{key} is not valid JSON: {e}") from e
+    if v is None:
+        v = {}
+    if not isinstance(v, dict):
+        raise ApiError(f"{key} must be a JSON object")
+    return v
+
+
+def _render(tmpl: Any, i: int) -> Any:
+    """`{i}` in every string value of a task template becomes the shard index."""
+    if isinstance(tmpl, str):
+        return tmpl.replace("{i}", str(i))
+    if isinstance(tmpl, dict):
+        return {k: _render(v, i) for k, v in tmpl.items()}
+    if isinstance(tmpl, list):
+        return [_render(v, i) for v in tmpl]
+    return tmpl
+
+
+def _plan_dict(plan) -> dict:
+    """A LeasePlan as JSON for the job log and the result (tolerant of partial objects)."""
+    keys = ("shards", "baseline_mib", "concurrency", "waves", "launch_to_all_running_s",
+            "worst_case_vm_seconds", "worst_case_usd", "needs_approval", "rejected")
+    d = {k: getattr(plan, k, None) for k in keys}
+    limit = getattr(plan, "limit", None)
+    if limit is not None:
+        keys = ("limit", "reason", "by_memory", "by_policy", "memory_quota_gb", "launch_rate")
+        d["limit"] = {k: getattr(limit, k, None) for k in keys}
+    d["summary"] = plan.summary()
+    return d
+
+
+def _baseline_mib(pg: Playground, image: str) -> int:
+    """The image's minimumMemoryInMiB (ImageBuilder.baseline_mib), else the 2 GB default."""
+    try:
+        return int(ImageBuilder(pg.cfg).baseline_mib(image))
+    except Exception:
+        return 2048
+
+
+def _follow_fleet(pg: Playground, job: Job, image: str, ids: list[str], timeout: float = 300.0) -> list[dict]:
+    """Poll `FleetMonitor.job_status(image)` every 2 s for the launched members, logging the
+    footer (done D/N, running, lost, slowest) whenever it changes, until every member is done,
+    lost, or gone from RUNNING, or `timeout` passes. Returns the last rows seen."""
+    mon = pg.monitor()
+    want, deadline, last, rows = set(ids), time.time() + timeout, None, []
+    while time.time() < deadline:
+        try:
+            rows = [r for r in mon.job_status(image) if r["microvm_id"] in want]
+        except Exception as e:
+            job.log(f"fleet job status unavailable: {type(e).__name__}: {e}", level="warn")
+            time.sleep(2)
+            continue
+        gone = want - {r["microvm_id"] for r in rows}
+        s = job_summary(rows)
+        line = f"done {s['done']}/{len(want)}, running {s['running']}, lost {s['lost']}, gone {len(gone)}"
+        if s["slowest"]:
+            sl = s["slowest"]
+            line += f", slowest {sl['microvm_id']} {sl['phase']} {sl['elapsed_s']}s"
+        if line != last:
+            job.log(line, rows=rows)
+            last = line
+        settled = {r["microvm_id"] for r in rows if r.get("done") or r.get("lost")} | gone
+        if settled >= want:
+            job.log(f"fleet job settled: {s['done']} done, {s['failed']} failed, {s['lost']} lost, "
+                    f"{len(gone)} gone", level="ok" if not s["failed"] else "warn")
+            return rows
+        time.sleep(2)
+    job.log(f"stopped following after {timeout:g}s; the VMs keep working", level="warn")
+    return rows
+
+
+def _lease_many(pg: Playground, b: dict, image: str, kind: str, task: dict, shards: int,
+                policy: LeasePolicy) -> dict:
+    """The shards > 1 path of POST /api/lease/run: plan (FleetManager.plan), refuse a rejected
+    plan or one that needs more VMs at once than the concurrency limit, then lease_many and
+    follow the fleet job. Dry run returns the plan and the first RunMicrovm request."""
+    from dataclasses import replace
+
+    env = LeasePolicy.from_env()
+    ceilings = {}
+    for key, cast in (("max_concurrency", int), ("max_vm_seconds", int), ("approval_usd", float)):
+        v = b.get(key)
+        ceilings[key] = cast(v) if v not in (None, "") else getattr(env, key)
+    policy = replace(policy, **ceilings)
+    template = _json_object(b, "task_template") if b.get("task_template") not in (None, "") else task
+    tasks = [_render(template, i) for i in range(shards)]
+    base_id = b.get("id") or f"pg-{uuid.uuid4().hex[:8]}"
+    token_tmpl = b.get("token") or ""
+    if kind != "none" and token_tmpl and "{i}" not in token_tmpl:
+        raise ApiError("token must contain {i} so every shard completes its own token")
+    leases, payloads = [], []
+    for i, t in enumerate(tasks):
+        lid = f"{base_id}-{i}"
+        # kind none has no orchestrator token: use the lease id so each shard gets its own clientToken
+        token = token_tmpl.replace("{i}", str(i)) if token_tmpl else (lid if kind == "none" else "")
+        lease = Lease(kind=kind, token=token, region=pg.cfg.region, target=b.get("target") or None,
+                      heartbeat_s=_int(b, "heartbeat_every", 30) or 30, id=lid)
+        try:
+            payloads.append(encode_payload(lease, t))
+        except ValueError as e:
+            raise ApiError(f"shard {i}: {e}") from e
+        leases.append(lease)
+    fm = pg.fm()
+    baseline = _int(b, "baseline_mib") or _baseline_mib(pg, image)
+    plan = fm.plan(shards, baseline, policy)
+    if plan.rejected:
+        raise ApiError(f"plan rejected: {plan.rejected}")
+    if shards > plan.concurrency:
+        reason = getattr(getattr(plan, "limit", None), "reason", "concurrency limit")
+        raise ApiError(f"{shards} leases exceed the concurrency limit {plan.concurrency} ({reason}); "
+                       "launch in waves")
+    if plan.needs_approval and not b.get("approve"):
+        raise ApiError(f"plan needs approval: worst case ${plan.worst_case_usd:.2f} is above the policy's "
+                       f"approval threshold ${policy.approval_usd:.2f}; tick approve to launch anyway")
+    version = b.get("version") or None
+    role = b.get("execution_role") or None
+    wait = bool(b.get("wait", True))
+    params = {
+        "image": image, "kind": kind, "shards": shards, "id": base_id, "target": leases[0].target,
+        "budget": policy.budget_s, "heartbeat_timeout": policy.heartbeat_timeout_s, "slack": policy.slack_s,
+        "max_concurrency": policy.max_concurrency, "baseline_mib": baseline, "wait": wait,
+        "concurrency": plan.concurrency,
+    }
+
+    def run(job: Job):
+        from microvm.lease import LeasePlanRejected
+
+        job.log(plan.summary(), level="ok", plan=_plan_dict(plan), policy=policy.to_dict())
+        job.log(
+            f"{shards} leases ({kind}), ids {leases[0].id} .. {leases[-1].id}; "
+            f"runHookPayload {min(map(len, payloads))}-{max(map(len, payloads))} chars",
+            leases=[{**lz.to_dict(), "token": _mask(lz.token) if lz.token else ""} for lz in leases],
+            tasks=tasks, client_tokens=[client_token(lz) for lz in leases],
+        )
+        first = fm.run_params(image, version=version, idle_policy=policy.idle_policy(),
+                              run_payload=payloads[0], max_duration=policy.max_duration(),
+                              execution_role=role, client_token=client_token(leases[0]))
+        job.log("RunMicrovm request for shard 0 (the others differ in runHookPayload and clientToken only)",
+                request=first, throttle=f"{fm.tps('RunMicrovm'):g}/s")
+        if pg.dry_run:
+            out = pg._dry("RunMicrovm", first,
+                          f"would launch {shards} leased VMs, {plan.concurrency} at a time, cap "
+                          f"{policy.max_duration()}s each")
+            out.update(plan=_plan_dict(plan), shards=shards, lease_ids=[lz.id for lz in leases])
+            return out
+        t0 = time.time()
+        try:
+            vms = fm.lease_many(image, leases, tasks, policy, baseline_mib=baseline, version=version,
+                                execution_role=role)
+        except LeasePlanRejected as e:
+            job.log(f"refused before launch: {e}", level="error")
+            raise
+        job.log(f"launched {len(vms)} VMs in {time.time() - t0:.2f}s", ids=[vm.microvm_id for vm in vms])
+        launched = [_vm_dict(vm) for vm in vms]
+        final = None
+        if wait:
+            for rec, vm in zip(launched, vms):
+                vm = fm.wait_until(vm.microvm_id, "RUNNING", timeout=180)
+                rec.update(_vm_dict(vm), running_s=round(time.time() - t0, 2))
+            job.log(f"all {len(vms)} RUNNING after {time.time() - t0:.1f}s; following the fleet job")
+            final = _follow_fleet(pg, job, image, [vm.microvm_id for vm in vms])
+        return {"launched": launched, "plan": _plan_dict(plan), "lease_ids": [lz.id for lz in leases],
+                "final": final, "summary": job_summary(final) if final is not None else None}
+
+    return pg.start_job("lease", params, run).to_dict()
+
+
 @Playground.route("POST", "/api/lease/run")
 def post_lease_run(pg: Playground, q, b):
     """RunMicrovm with a lease in runHookPayload (`FleetManager.lease`), then follow the
-    job inside the VM through `/status` until the lease completes."""
+    job inside the VM through `/status` until the lease completes. With `shards` > 1 the
+    request becomes a planned fan-out (`_lease_many`)."""
     image = _need(b, "image")
     kind = b.get("kind") or "none"
-    task = b.get("task")
-    if isinstance(task, str):
-        try:
-            task = json.loads(task) if task.strip() else {}
-        except ValueError as e:
-            raise ApiError(f"task is not valid JSON: {e}") from e
-    if task is None:
-        task = {}
-    if not isinstance(task, dict):
-        raise ApiError("task must be a JSON object")
+    task = _json_object(b, "task")
+    policy = LeasePolicy(
+        budget_s=_int(b, "budget", 900) or 900,
+        heartbeat_timeout_s=_int(b, "heartbeat_timeout", 120) or 120,
+        slack_s=_int(b, "slack", 120) or 120,
+    )
+    shards = _int(b, "shards", 1) or 1
+    if shards > 1:
+        return _lease_many(pg, b, image, kind, task, shards, policy)
+    if not task and b.get("task_template") not in (None, ""):
+        task = _render(_json_object(b, "task_template"), 0)
     lease = Lease(
         kind=kind,
         token=b.get("token") or "",
@@ -1237,11 +1438,6 @@ def post_lease_run(pg: Playground, q, b):
         target=b.get("target") or None,
         heartbeat_s=_int(b, "heartbeat_every", 30) or 30,
         id=b.get("id") or None,
-    )
-    policy = LeasePolicy(
-        budget_s=_int(b, "budget", 900) or 900,
-        heartbeat_timeout_s=_int(b, "heartbeat_timeout", 120) or 120,
-        slack_s=_int(b, "slack", 120) or 120,
     )
     try:
         payload = encode_payload(lease, task)
@@ -1415,6 +1611,24 @@ def post_fleet_verb(pg: Playground, q, b, verb: str):
         return {"count": count, "wall_s": round(time.time() - t0, 1)}
 
     return pg.start_job(verb, {k: v for k, v in b.items()}, run).to_dict()
+
+
+@Playground.route("GET", "/api/fleet/jobs")
+def get_fleet_jobs(pg: Playground, q, b):
+    """`FleetMonitor.job_status`: one `/status` row per RUNNING member of the image, polled in
+    parallel, plus the footer summary. Dry run without AWS answers with the sample fleet."""
+    image = (q.get("image") or [None])[0]
+    if not image:
+        raise ApiError("image is required")
+    port = int((q.get("port") or ["8080"])[0] or 8080)
+    sample = False
+    try:
+        rows = pg.monitor().job_status(image, port=port)
+    except Exception:
+        if not pg.dry_run:
+            raise
+        rows, sample = _sample_fleet_jobs(pg.cfg.region, image), True
+    return {"image": image, "items": rows, "summary": job_summary(rows), "sample": sample}
 
 
 @Playground.route("GET", "/api/fleet/cost")
@@ -1799,6 +2013,7 @@ def serve(
 ) -> None:
     pg = Playground(cfg, dry_run=dry_run)
     server = ThreadingHTTPServer((host, port), _make_handler(pg))
+    pg.persist = True  # bound and about to serve: from here on, settings and jobs are worth keeping
     url = f"http://{host}:{port}/"
     print(
         f"microvm-ctl playground {__version__} on {url}  "

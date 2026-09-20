@@ -113,6 +113,22 @@ Launches one lease through `FleetManager.lease` for manual tests. `--token` is r
 mvm lease run handoff-agent --kind none --task '{"steps": ["echo hi"]}' --wait
 ```
 
+### `mvm lease plan --image NAME --shards N [--baseline-mib M] [--max-concurrency N] [--max-vm-seconds S] [--approval-usd USD] [--json]`
+
+Prints the fan-out plan for N leases of that image: concurrency and why (memory quota, policy, or default), waves, launch time to all running, worst-case VM-seconds and USD, whether approval is needed, and the rejection reason if any. Exit code 2 when rejected, 3 when approval is needed. Policy values come from `MVM_LEASE_*` and the flags.
+
+### `mvm lease run IMAGE --shards N [--task-template JSON]`
+
+Launches N leases at once after the plan check; `{i}` in the template's string values is replaced by the shard index. Refuses more shards than the concurrency limit.
+
+### `mvm lease asl --map [--items-expr E] [--max-concurrency N] [--approval-topic ARN --approve-above-shards K]`
+
+Emits the state machine with a `Map` over the shards, `MaxConcurrency` computed from the image and the applied quota when omitted, and an optional approval gate through SNS and a task token.
+
+### `mvm watch --image NAME [--interval 2] [--timeout 600]`
+
+One row per running member of the image with phase, progress, and elapsed time, and a footer with done over total and the slowest member. Exits when every member is done or gone.
+
 ## Observability
 
 ### `mvm top [--image NAME] [--watch] [--interval 3]`

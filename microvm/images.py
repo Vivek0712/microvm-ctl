@@ -15,6 +15,7 @@ Snapshot rules baked into this builder's defaults:
 from __future__ import annotations
 
 import io
+import logging
 import time
 import zipfile
 from dataclasses import dataclass
@@ -25,6 +26,10 @@ from microvm.client import image_arn, lambda_client, microvm_client
 from microvm.config import PlaneConfig
 
 TERMINAL_BUILD = {"SUCCESSFUL", "FAILED"}
+#: minimumMemoryInMiB assumed when an image version does not report one
+DEFAULT_BASELINE_MIB = 2048
+
+log = logging.getLogger(__name__)
 
 
 class ImageBuildError(RuntimeError):
@@ -230,3 +235,31 @@ class ImageBuilder:
             .paginate(imageIdentifier=self.arn(name))
             .build_full_result()["items"]
         )
+
+    def latest_active_version(self, name: str) -> str:
+        """The version RunMicrovm picks when none is given: the image's latestActiveImageVersion,
+        else the newest version whose status is ACTIVE."""
+        img = self.api.get_microvm_image(imageIdentifier=self.arn(name))
+        version = img.get("latestActiveImageVersion")
+        if version:
+            return str(version)
+        active = [v for v in self.list_versions(name) if v.get("status") == "ACTIVE"]
+        if not active:
+            raise ImageBuildError(f"image {name} has no ACTIVE version")
+        active.sort(key=lambda v: str(v.get("createdAt", "")))
+        return str(active[-1]["imageVersion"])
+
+    def baseline_mib(self, name: str, version: str | None = None) -> int:
+        """The version's `resources[0].minimumMemoryInMiB`: what one clone of it costs against the
+        memory quota. Latest ACTIVE version when `version` is None; DEFAULT_BASELINE_MIB (2048)
+        with a logged note when the field is absent."""
+        version = version or self.latest_active_version(name)
+        detail = self.api.get_microvm_image_version(imageIdentifier=self.arn(name), imageVersion=version)
+        resources = detail.get("resources") or []
+        first = resources[0] if resources and isinstance(resources[0], dict) else {}
+        mib = first.get("minimumMemoryInMiB")
+        if not mib:
+            log.info("image %s:%s reports no minimumMemoryInMiB; assuming %d MiB",
+                     name, version, DEFAULT_BASELINE_MIB)
+            return DEFAULT_BASELINE_MIB
+        return int(mib)

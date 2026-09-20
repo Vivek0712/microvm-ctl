@@ -621,13 +621,15 @@ class HookApp:
                 deadline, next_snapshot = time.time() + 3600, 0.0
                 try:
                     while time.time() < deadline and not self.server.stopping.is_set():
-                        for entry in app.job.since(seq):
-                            seq = entry["seq"]
-                            self.wfile.write(f"data: {json.dumps(entry, default=str)}\n\n".encode())
+                        # snapshot first, so the stream always opens with the current state and
+                        # a line logged during connection setup follows it instead of preceding it
                         if time.time() >= next_snapshot:
                             snap = json.dumps(app.job.snapshot(), default=str)
                             self.wfile.write(f"event: snapshot\ndata: {snap}\n\n".encode())
                             next_snapshot = time.time() + 5
+                        for entry in app.job.since(seq):
+                            seq = entry["seq"]
+                            self.wfile.write(f"data: {json.dumps(entry, default=str)}\n\n".encode())
                         self.wfile.flush()
                         if self._client_gone():
                             return

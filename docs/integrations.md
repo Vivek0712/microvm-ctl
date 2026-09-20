@@ -96,3 +96,25 @@ mvm watch <microvm-id>
 ## Any other orchestrator
 
 A laptop script, a CI job, or your own control plane uses `http`, `sqs`, or `eventbridge`: mint a token, call `FleetManager.lease`, and consume the heartbeat, success, and failure messages the VM sends to your target. There is no closed-token signal for `sqs` and `eventbridge`, so the VM's `maximumDurationInSeconds` is the guarantee. Example with all three kinds and a Function URL collector: [generic-handoff](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/generic-handoff). The shared agent image every example runs is [handoff-agent](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/handoff-agent).
+
+## Leases at scale
+
+A lease is always one VM, one task, one token. Parallelism lives in the construct the orchestrator already has (a Step Functions `Map`, a durable `context.map`, a loop), and the plane owns the number that makes it safe: how many can run at once on this account.
+
+`LeasePolicy` carries the platform-owned ceilings next to the time budgets: `max_concurrency` (VMs in flight per fan-out), `max_vm_seconds` (worst case per fan-out), and `approval_usd` (worst-case cost above which a plan needs a human). `LeasePolicy.from_env()` reads them from `MVM_LEASE_BUDGET_S`, `MVM_LEASE_HEARTBEAT_TIMEOUT_S`, `MVM_LEASE_SLACK_S`, `MVM_LEASE_MAX_CONCURRENCY`, `MVM_LEASE_MAX_VM_SECONDS`, and `MVM_LEASE_APPROVAL_USD`, so the task author does not set them.
+
+`FleetManager.fanout_limit(baseline_mib, policy)` returns how many VMs of that baseline can run at once and why: the applied memory quota divided by the baseline, the policy's `max_concurrency`, or a documented default of 8 when neither is known. `FleetManager.plan(shards, baseline_mib, policy)` returns a `LeasePlan`: concurrency, waves, launch time to all running (the applied `RunMicrovm` rate plus the measured 3.5 s restore), worst-case VM-seconds, worst-case USD at the published rates, `needs_approval`, and `rejected` with the reason. `plan.check()` raises `LeasePlanRejected` before anything launches when the baseline does not fit the quota, when worst-case VM-seconds exceed `max_vm_seconds`, or when the policy allows nothing. `FleetManager.lease_many(image, leases, tasks, policy, baseline_mib=...)` runs that check, refuses more leases than the concurrency limit, and launches the rest through the shared token bucket in order.
+
+```console
+mvm lease plan --image handoff-agent --shards 8            # the honest number, exit 2 when rejected, 3 when approval is needed
+mvm lease run handoff-agent --shards 4 --task-template '{"steps": ["echo shard {i}"]}'
+mvm lease asl --image handoff-agent --map --max-concurrency 4 [--approval-topic ARN --approve-above-shards 8]
+mvm watch --image handoff-agent                              # every member: phase, progress, elapsed; done over total; slowest
+mvm quotas                                                   # now also "2 GB images: 4 at once"
+```
+
+`mvm lease asl --map` wraps the single lease in a `Map` over `$states.input.shards` with `MaxConcurrency` computed from `fanout_limit` when you do not pass it; with `--approval-topic` the machine gains a `Gate` choice that routes plans above `--approve-above-shards` through `sns:publish.waitForTaskToken` before the fan-out (omit the threshold and every fan-out is gated). Inside a JSONata `Map` the service exposes no item index, so the `Items` expression wraps each shard as `{index, task}` and the lease id and `ClientToken` carry that index; the shard's terminal state is `ShardDone` because state names must be unique across the machine. A throttled launch is retried after 2 s with doubling and full jitter, up to 8 attempts, because the launch quota is per second and a 10 s first wait dominated every fan-out measured. `microvm.integrations.durable.lease_map(context, fm, image, tasks, policy=..., baseline_mib=..., max_concurrency=None, approve=None)` does the same for durable functions: a plan step, an optional approval callback, then `context.map` over `lease_with_relaunch`, returning the plan and every outcome.
+
+Inside one VM, the handoff agent's `"parallel": true` runs steps concurrently under the 4x burst without touching the quota; reach for it before a fan-out when the shards are small.
+
+Who controls runaway cost, in five lines. The account quota is the hard stop and is raised by ticket. The policy is the platform team's ceiling and is enforced before launch. The plan is the number the requester reads before spending. Approval above the threshold goes through the orchestrator's own callback and is recorded in its history. After launch, every VM's duration cap and the reaper bound any mistake, and a circuit breaker (a metric on running microVM memory, an alarm, and a drain function; see the [circuit-breaker](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/circuit-breaker) example) is the account-wide stop.

@@ -71,6 +71,19 @@ IdlePolicy(max_idle=300, suspended_for=3600, auto_resume=True)
 
 Maps to `maxIdleDurationSeconds`, `suspendedDurationSeconds`, and `autoResumeEnabled`. Idle detection keys off endpoint traffic only. `suspended_for` is an auto-terminate timer, so size it to the longest absence you want to survive.
 
+### Leases at scale
+
+```python
+from microvm import Lease, LeasePolicy
+policy = LeasePolicy.from_env()                       # MVM_LEASE_* ceilings, platform owned
+limit = fm.fanout_limit(2048, policy)                 # how many 2 GB VMs at once, and why
+plan = fm.plan(8, 2048, policy)                       # concurrency, waves, launch time, worst-case VM-s and USD
+plan.check()                                          # LeasePlanRejected before anything launches
+vms = fm.lease_many("handoff-agent", leases, tasks, policy, baseline_mib=2048)
+```
+
+`plan_fanout`, `LeasePlan`, `FanoutLimit`, and `LeasePlanRejected` live in `microvm.lease` and are pure; `ImageBuilder.baseline_mib(name)` reads an image's baseline. `FleetMonitor.job_status(image)` returns every running member's `/status` snapshot for `mvm watch --image` and the playground.
+
 ## Fleet
 
 A declarative set of microVMs from one image.

@@ -251,12 +251,19 @@ body.dry .dry-banner{display:block}
     <!-- ================= fleet ================= -->
     <section class="view" id="view-fleet">
       <div class="view-head"><div><h2>Fleet</h2><p>Every microVM in the region, live. Launch, converge a fleet to N, park it, drain it. Every mutating call goes through the token bucket at 80% of the applied quota.</p></div>
-        <div class="actions" style="margin:0"><label class="switch"><input type="checkbox" id="fleetAuto"> auto-refresh 3 s</label><button class="btn" onclick="loadFleet()">Refresh</button></div></div>
+        <div class="actions" style="margin:0"><label class="switch" title="one /status per RUNNING member of an image, polled every 2 s"><input type="checkbox" id="fleetJobs"> fleet job</label><label class="switch"><input type="checkbox" id="fleetAuto"> auto-refresh 3 s</label><button class="btn" onclick="loadFleet()">Refresh</button></div></div>
       <div class="card">
         <h3>microVMs <span class="right"><label>image <select id="f_filter" onchange="loadFleet()"><option value="">all images</option></select></label> &nbsp; <label><input type="checkbox" id="f_all" onchange="loadFleet()"> include TERMINATED</label></span></h3>
         <div id="fleetCounts" class="chips" style="margin-bottom:10px"></div>
         <div class="scroll"><table id="fleetTable"><thead><tr><th>microvm id</th><th>state</th><th>image</th><th>ver</th><th>age</th><th>endpoint</th><th></th></tr></thead><tbody></tbody></table></div>
         <div class="empty" id="fleetEmpty" hidden>No microVMs. Launch one below.</div>
+      </div>
+      <div class="card" id="fleetJobCard" hidden style="margin-top:16px">
+        <h3>Fleet job <span class="right"><label>image <select id="fj_image" onchange="fleetJobReset()"></select></label> &nbsp; <label>hooks port <input type="number" id="fj_port" placeholder="8080" style="width:74px;padding:2px 6px" onchange="fleetJobReset()"></label></span></h3>
+        <div class="scroll"><table id="fleetJobTable"><thead><tr><th>microvm id</th><th>lease id</th><th>phase</th><th>progress</th><th class="num">elapsed</th><th>state</th></tr></thead><tbody></tbody></table></div>
+        <div class="empty" id="fleetJobEmpty" hidden>No RUNNING member of this image.</div>
+        <div class="hint" id="fleetJobFoot">fetching…</div>
+        <div class="hint">One <code>GET /status</code> per RUNNING member (<code>FleetMonitor.job_status</code>, 8 in parallel, 5 s each); a member that does not answer shows the reason in its row and never hides the others. Click a row to open its job panel. The same table is <code>mvm watch --image NAME</code>.</div>
       </div>
       <div class="grid g2" style="margin-top:16px">
         <div class="card"><h3>Run microVMs</h3>
@@ -310,10 +317,15 @@ body.dry .dry-banner{display:block}
           <label>slack (s)<input type="number" id="e_slack" value="120" min="0"></label>
           <label>heartbeat every (s)<input type="number" id="e_hb" value="30" min="1"></label>
           <label class="wide">execution role override<input type="text" id="e_role" class="mono" placeholder="MVM_EXECUTION_ROLE_ARN"></label>
+          <label>shards (1 = one lease)<input type="number" id="e_shards" value="1" min="1"></label>
+          <label>max concurrency<input type="number" id="e_maxc" min="0" placeholder="policy env / quota"></label>
+          <label>baseline MiB<input type="number" id="e_base" min="128" placeholder="from the image"></label>
+          <label class="chk"><input type="checkbox" id="e_approve"> approve a plan above the approval threshold</label>
+          <label class="wide">task template for shards &gt; 1 ({i} = shard index in every string; blank = the task above for every shard)<textarea id="e_tmpl" class="mono" placeholder='{"steps":["echo shard {i}","sleep 2"]}'></textarea></label>
           <label class="chk"><input type="checkbox" id="e_wait" checked> wait for RUNNING, then follow /status until the lease is done (300 s max)</label>
         </div>
         <div class="actions"><button class="btn primary" onclick="leaseVm()">Lease</button></div>
-        <div class="hint">clientToken = sha256(kind:token), so a replayed launch returns the same VM. The policy becomes the VM's idle policy (max idle = budget, no auto-resume) and its duration cap (budget + slack). The job log shows the encoded payload and the exact RunMicrovm request before anything is sent.</div>
+        <div class="hint">clientToken = sha256(kind:token), so a replayed launch returns the same VM. The policy becomes the VM's idle policy (max idle = budget, no auto-resume) and its duration cap (budget + slack). The job log shows the encoded payload and the exact RunMicrovm request before anything is sent. With shards &gt; 1 the plane sizes the fan-out first (<code>FleetManager.plan</code>: memory quota, launch rate, policy ceilings) and logs the plan sentence; a rejected plan, or more shards than the concurrency limit, is refused before anything launches; each shard gets lease id <code>&lt;id&gt;-&lt;i&gt;</code> and, for orchestrator kinds, a token from the token field with <code>{i}</code> replaced; then <code>lease_many</code> launches through the bucket and the job follows the fleet job until every shard is done.</div>
         <div id="jobs-lease"></div>
       </div>
     </section>
@@ -555,7 +567,7 @@ async function loadImages(){
 }
 function fillImageSelects(){
   const opts = state.images.map(i => `<option value="${esc(i.name)}">${esc(i.name)}</option>`).join('');
-  ['#r_image','#s_image','#e_image','#p_image','#l_image'].forEach(s => { const el=$(s); const v=el.value; el.innerHTML = opts; if (v) el.value=v; });
+  ['#r_image','#s_image','#e_image','#p_image','#l_image','#fj_image'].forEach(s => { const el=$(s); const v=el.value; el.innerHTML = opts; if (v) el.value=v; });
   ['#f_filter','#k_image'].forEach(s => { const el=$(s); const v=el.value; el.innerHTML = '<option value="">all images</option>'+opts; el.value=v; });
 }
 async function showVersions(name){
@@ -586,7 +598,45 @@ async function loadFleet(){
       <td style="white-space:nowrap">${m.state==='RUNNING'?`<button class="btn sm" onclick="vmVerb('${m.microvm_id}','suspend')">suspend</button> `:''}${m.state==='SUSPENDED'?`<button class="btn sm" onclick="vmVerb('${m.microvm_id}','resume')">resume</button> `:''}${m.state!=='TERMINATED'?`<button class="btn sm danger" onclick="vmVerb('${m.microvm_id}','terminate')">terminate</button> `:''}<button class="btn sm" onclick="quickCall('${m.microvm_id}')">call</button> ${m.state==='RUNNING'?`<button class="btn sm ${follow.id===m.microvm_id?'primary':''}" onclick="jobPanel('${m.microvm_id}')" title="phase, progress and log tail from the hook runtime's /status">job</button> `:''}<button class="btn sm" onclick="vmJson('${m.microvm_id}')">json</button></td></tr>`).join('');
     fillVmSelect();
     mountJobPanel();
+    if ($('#fleetJobs').checked && !fleetJob.timer && !fleetJob.inflight) pollFleetJob(); // back on the fleet view: resume
   } catch(e){ fail(e); }
+}
+
+// ---- fleet job: one /status per RUNNING member of an image (GET /api/fleet/jobs), polled every 2 s while the card is open
+const fleetJob = { timer:null, inflight:false };
+$('#fleetJobs').onchange = e => { $('#fleetJobCard').hidden = !e.target.checked; clearTimeout(fleetJob.timer); fleetJob.timer = null; if (e.target.checked) { if ($('#f_filter').value) $('#fj_image').value = $('#f_filter').value; pollFleetJob(); } };
+function fleetJobReset(){ clearTimeout(fleetJob.timer); fleetJob.timer = null; $('#fleetJobTable tbody').innerHTML = ''; $('#fleetJobFoot').textContent = 'fetching…'; if (!fleetJob.inflight) pollFleetJob(); }
+async function pollFleetJob(){
+  clearTimeout(fleetJob.timer); fleetJob.timer = null;
+  if (!$('#fleetJobs').checked || fleetJob.inflight) return;
+  const image = $('#fj_image').value;
+  fleetJob.inflight = true;
+  try {
+    if (!image) $('#fleetJobFoot').textContent = 'no image: build one first';
+    else { const r = await api('GET', `/api/fleet/jobs?image=${encodeURIComponent(image)}&port=${$('#fj_port').value || ''}`); renderFleetJob(r); }
+  } catch(e){ $('#fleetJobFoot').innerHTML = `<span style="color:var(--bad)">${esc(e.message)}</span> · retrying every 2 s`; }
+  finally { fleetJob.inflight = false; }
+  if (state.view === 'fleet' && $('#fleetJobs').checked) fleetJob.timer = setTimeout(pollFleetJob, 2000);
+}
+function jobStateChip(r){
+  if (!('phase' in r)) return `<span class="chip bad" title="${esc(r.error)}">no answer</span>`;
+  if (r.done) return r.error ? `<span class="chip bad" title="${esc(r.error)}">failed</span>` : '<span class="chip ok">done</span>';
+  if (r.lost) return '<span class="chip warn">lost</span>';
+  return '<span class="chip">running</span>';
+}
+function fleetJobRows(rows){
+  return rows.map(m => { const p = m.progress || {}, pct = p.total ? Math.min(100, Math.round(100 * (p.done || 0) / p.total)) : null;
+    const prog = 'phase' in m ? `<div class="bar ${pct === null ? 'indet' : ''} ${m.done && !m.error ? 'done' : ''}"><i style="width:${pct ?? 28}%"></i></div><span class="small muted">${pct === null ? `${p.done || 0} done` : `${p.done}/${p.total}`}</span>` : `<span class="muted small">${esc(m.error)}</span>`;
+    return `<tr class="click" onclick="jobPanel('${esc(m.microvm_id)}')" title="open the job panel for this VM"><td class="mono">${esc(m.microvm_id)}</td><td class="mono">${esc(m.lease_id || '–')}</td><td>${esc(m.phase ?? '–')}</td><td style="min-width:150px">${prog}</td><td class="num">${m.elapsed_s != null ? fmtDur(m.elapsed_s) : '–'}</td><td>${jobStateChip(m)}</td></tr>`; }).join('');
+}
+function jobFooter(s, total){
+  const sl = s.slowest;
+  return `done <b>${s.done}/${total ?? s.total}</b>, running <b>${s.running}</b>, lost <b>${s.lost}</b>${s.failed ? `, failed <b>${s.failed}</b>` : ''}${s.unanswered ? `, no answer <b>${s.unanswered}</b>` : ''}${sl ? `, slowest <span class="mono">${esc(sl.microvm_id)}</span> ${esc(sl.phase)} ${fmtDur(sl.elapsed_s)}` : ''}`;
+}
+function renderFleetJob(r){
+  $('#fleetJobEmpty').hidden = r.items.length > 0;
+  $('#fleetJobTable tbody').innerHTML = fleetJobRows(r.items);
+  $('#fleetJobFoot').innerHTML = jobFooter(r.summary) + ' · polling every 2 s' + sampleChip(r.sample);
 }
 
 // ---- job inside the VM: poll GET /status through /api/vms/<id>/job while the panel is open
@@ -662,8 +712,11 @@ async function leaseVm(){
   let task = $('#e_task').value.trim();
   if (task) { try { task = JSON.parse(task); } catch { return fail(new Error('task is not valid JSON')); } } else task = {};
   if (task === null || typeof task !== 'object' || Array.isArray(task)) return fail(new Error('task must be a JSON object'));
-  try { const j = await api('POST','/api/lease/run',{ image:$('#e_image').value, kind:$('#e_kind').value, token:$('#e_token').value.trim(), target:$('#e_target').value.trim(), task, id:$('#e_id').value.trim(), budget:Number($('#e_budget').value), heartbeat_timeout:Number($('#e_hbt').value), slack:Number($('#e_slack').value), heartbeat_every:Number($('#e_hb').value), execution_role:$('#e_role').value, wait:$('#e_wait').checked });
-    state.openJobs.add(j.id); toast('lease started'); pollJobs(true); } catch(e){ fail(e); }
+  let tmpl = $('#e_tmpl').value.trim();
+  if (tmpl) { try { tmpl = JSON.parse(tmpl); } catch { return fail(new Error('task template is not valid JSON')); } if (tmpl === null || typeof tmpl !== 'object' || Array.isArray(tmpl)) return fail(new Error('task template must be a JSON object')); } else tmpl = null;
+  const shards = Math.max(1, Number($('#e_shards').value) || 1);
+  try { const j = await api('POST','/api/lease/run',{ image:$('#e_image').value, kind:$('#e_kind').value, token:$('#e_token').value.trim(), target:$('#e_target').value.trim(), task, task_template:tmpl, shards, max_concurrency:$('#e_maxc').value || null, baseline_mib:$('#e_base').value || null, approve:$('#e_approve').checked, id:$('#e_id').value.trim(), budget:Number($('#e_budget').value), heartbeat_timeout:Number($('#e_hbt').value), slack:Number($('#e_slack').value), heartbeat_every:Number($('#e_hb').value), execution_role:$('#e_role').value, wait:$('#e_wait').checked });
+    state.openJobs.add(j.id); toast(shards > 1 ? `fan-out of ${shards} started` : 'lease started'); pollJobs(true); } catch(e){ fail(e); }
 }
 
 // ------------------------------------------------------------ call
@@ -820,7 +873,14 @@ function jobCard(j, latest){
 }
 function renderResult(j){
   const r = j.result;
-  if (r.dry_run) return `<div class="muted small" style="margin-bottom:6px">dry run · ${esc(r.operation)} · ${esc(r.note)}</div>${jsonBlock(r.params)}`;
+  if (r.dry_run) return `${r.plan ? `<div class="hint" style="margin:0 0 6px;color:var(--ok)">plan: ${esc(r.plan.summary)}</div>` : ''}<div class="muted small" style="margin-bottom:6px">dry run · ${esc(r.operation)} · ${esc(r.note)}</div>${jsonBlock(r.params)}`;
+  if (j.kind==='lease' && r.plan) {
+    const s = r.summary, rows = r.final || [], n = (r.launched||[]).length;
+    return `<div class="hint" style="margin:0 0 8px;color:var(--ok)">plan: ${esc(r.plan.summary)}</div>
+      <div class="tiles"><div><b>${n}</b><small>VMs launched · ${r.plan.concurrency} at a time</small></div><div class="${s && s.failed ? 'bad' : s && s.done === n ? 'ok' : ''}"><b>${s ? `${s.done}/${n}` : '–'}</b><small>done${s ? ` · ${s.failed} failed · ${s.lost} lost` : ' (not followed)'}</small></div><div><b>${s && s.slowest ? fmtDur(s.slowest.elapsed_s) : '–'}</b><small>slowest shard${s && s.slowest ? ' · ' + esc(s.slowest.phase) : ''}</small></div></div>
+      ${rows.length ? `<div class="scroll" style="margin-top:8px"><table><thead><tr><th>microvm id</th><th>lease id</th><th>phase</th><th>progress</th><th class="num">elapsed</th><th>state</th></tr></thead><tbody>${fleetJobRows(rows)}</tbody></table></div>` : ''}
+      <details style="margin-top:8px"><summary class="small" style="cursor:pointer;color:var(--plane)">raw result</summary>${jsonBlock(r)}</details>`;
+  }
   if (j.kind==='build') return `<div class="tiles"><div><b>${esc(r.version)}</b><small>version, ACTIVE</small></div><div><b>${r.build_seconds ?? '–'} s</b><small>Dockerfile → snapshot</small></div><div><b>${r.memory_snapshot_bytes ? (r.memory_snapshot_bytes/1e6).toFixed(0)+' MB' : '–'}</b><small>memory snapshot</small></div><div><b>${r.disk_snapshot_bytes ? (r.disk_snapshot_bytes/1e6).toFixed(0)+' MB' : '–'}</b><small>disk snapshot</small></div></div>`;
   if (j.kind==='run') return `<div class="scroll"><table><thead><tr><th>microvm</th><th>state</th><th class="num">api s</th><th class="num">running s</th><th class="num">serving s</th><th>endpoint</th></tr></thead><tbody>${r.launched.map(v => `<tr><td class="mono">${esc(v.microvm_id)}</td><td>${pill(v.state)}</td><td class="num">${v.api_s ?? '–'}</td><td class="num">${v.running_s ?? '–'}</td><td class="num">${v.first_byte_s ?? '–'}</td><td class="mono small">${esc(v.endpoint||'')}</td></tr>`).join('')}</tbody></table></div>`;
   if (j.kind==='scale') return `<div class="tiles"><div><b>${r.before} → ${r.after}</b><small>active members</small></div><div><b>${r.wall_s} s</b><small>wall time</small></div><div><b>${r.launched.length}</b><small>launched</small></div></div>`;
@@ -853,9 +913,16 @@ function renderResult(j){
 // ------------------------------------------------------------ boot
 (async function boot(){
   try { await loadConfig(); } catch(e){ fail(e); }
-  const first = location.hash.slice(1);
+  const raw = location.hash.slice(1);
+  const [first, query] = raw.split('?');
   if (first && $('#view-'+first)) show(first); else loadOverview();
   pollJobs();
+  // deep link: #fleet?fleetjob=<image> opens the fleet job panel on that image (used for screenshots and sharing)
+  const params = new URLSearchParams(query || '');
+  if (params.get('fleetjob')) setTimeout(() => {
+    $('#f_filter').value = params.get('fleetjob'); $('#fj_image').value = params.get('fleetjob');
+    $('#fleetJobs').checked = true; $('#fleetJobs').dispatchEvent(new Event('change'));
+  }, 1500);
 })();
 </script>
 </body>

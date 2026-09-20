@@ -33,6 +33,7 @@ Lambda MicroVMs exposes the primitive under Lambda itself: a Firecracker VM with
 | In-VM hook runtime | zero-dependency server for `/ready`, `/validate`, `/run`, `/resume`, `/suspend`, `/terminate` plus your own routes | `microvm/hooks/server.py` |
 | Observability and cost | live fleet table, CloudWatch tail, a cost model that prices a session shape before you commit to it | `microvm/monitor.py` |
 | Account bootstrap | artifact bucket plus separate build and execution roles | `microvm/bootstrap.py` |
+| Leases at scale | `LeasePolicy` ceilings, `plan` with the honest concurrency and worst-case cost, `lease_many`, `mvm lease asl --map`, `lease_map`, `mvm watch --image` | `microvm/lease.py`, `microvm/integrations/` |
 | Leases | `Lease`, `LeasePolicy`, `FleetManager.lease`: one task per VM, completed by the VM through a task token, callback id, HTTP, SQS, or EventBridge | `microvm/lease.py` |
 | Orchestrator integrations | generated Step Functions state machine and IAM (`mvm lease asl`, `mvm lease policy`), `lease_microvm` for Lambda durable functions | `microvm/integrations/` |
 
@@ -134,9 +135,9 @@ mvm playground            # http://127.0.0.1:8765
 - [The playground](docs/playground.md): the local web app over the whole SDK, and how to host it.
 - [Integrations](docs/integrations.md): the lease contract for handing a VM to Step Functions, Lambda durable functions, or your own orchestrator, and what the plane should own.
 
-## See it working: eight examples and the article series
+## See it working: thirteen examples and the article series
 
-The fastest way to understand the plane is to read the apps built on it. The companion repo [awesome-microvm](https://github.com/Vivek0712/awesome-microvm) holds eight production-shaped examples, each a Dockerfile plus a single-file app, deployed and recorded on the live service:
+The fastest way to understand the plane is to read the apps built on it. The companion repo [awesome-microvm](https://github.com/Vivek0712/awesome-microvm) holds thirteen production-shaped examples, each a Dockerfile plus a single-file app, deployed and recorded on the live service:
 
 | Example | What it shows |
 |---|---|
@@ -148,12 +149,18 @@ The fastest way to understand the plane is to read the apps built on it. The com
 | [ci-runner](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/ci-runner) | clone, test, report, terminate; `--max-duration` as the runaway cap |
 | [pdf-service](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/pdf-service) | untrusted HTML rendered in the VM; idle policy sleeps it between bursts |
 | [multi-tenant-agents](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/multi-tenant-agents) | one VM per tenant, identity via `runHookPayload`, `run_payload_factory` on a `Fleet` |
+| [handoff-agent](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/handoff-agent) | the one image every orchestrator leases: `on_lease`, phases, progress, heartbeats, typed failures, in-VM parallel steps |
+| [stepfunctions-handoff](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/stepfunctions-handoff) | `runMicrovm.waitForTaskToken` machines from `mvm lease asl`, single lease and a governed Map fan-out |
+| [durable-handoff](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/durable-handoff) | a Lambda durable function leases a VM with `lease_with_relaunch` and fans out with `lease_map` |
+| [generic-handoff](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/generic-handoff) | any controller: the same lease over SQS, EventBridge, or an HTTP collector |
+| [circuit-breaker](https://github.com/Vivek0712/awesome-microvm/tree/main/examples/circuit-breaker) | running-memory metric, alarm, and `Fleet.drain` for every image: the account-wide stop behind `LeasePolicy` |
 
-The three-part article series **Building on AWS Lambda MicroVMs** on the AWS Builder Center walks through them:
+The four-part article series **Building on AWS Lambda MicroVMs** on the AWS Builder Center walks through them:
 
 1. [Control and scale AWS Lambda MicroVMs with microvm-ctl](https://builder.aws.com/content/3JIDTpz0ZgatSBv24drra3gEod9/control-and-scale-aws-lambda-microvms-with-microvm-ctl): this plane and its measurements.
 2. [Seven workloads Lambda could never run, until MicroVMs](https://builder.aws.com/content/3JJ2oNWY9EsZzivMMx044cSlrFQ/seven-workloads-lambda-could-never-run-until-microvms): the first seven examples through build, run, cost, and gotchas.
 3. [A kernel for every customer: scaling AI agents to 1,000 tenants on AWS Lambda MicroVMs with microvm-ctl](https://builder.aws.com/content/3JJ7tASPSSUUTrcpWnWtxOuu8g3/a-kernel-for-every-customer-scaling-ai-agents-to-1000-tenants-on-aws-lambda-microvms-with-microvm-ctl): the multi-tenant finale with the decision guide.
+4. Hand a task to a MicroVM from anywhere (part 4, [source in awesome-microvm](https://github.com/Vivek0712/awesome-microvm/blob/main/blog/03-handoff.md), Builder Center link to follow): the lease contract, Step Functions, durable functions, your own controller, and leases at scale.
 
 The article sources and a long-form deep dive per example live under [awesome-microvm/blog](https://github.com/Vivek0712/awesome-microvm/tree/main/blog).
 

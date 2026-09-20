@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 (2026-09-20)
+
+- Leases at scale: `LeasePolicy` gains `max_concurrency`, `max_vm_seconds`, `approval_usd`, and `from_env()`; `FleetManager.fanout_limit`, `plan` (`LeasePlan`, `LeasePlanRejected`), and `lease_many`; `ImageBuilder.baseline_mib`.
+- `mvm lease plan`, `mvm lease run --shards`, `mvm lease asl --map` with an optional SNS approval gate, `mvm watch --image`, and per-tier counts in `mvm quotas`.
+- `microvm.integrations.durable.lease_map`: plan step, optional approval callback, `context.map` over `lease_with_relaunch`.
+- `FleetMonitor.job_status` and a fleet job panel plus shards in the playground's lease form.
+- Companion examples: Step Functions map machine, durable fan-out mode, `parallel: true` steps in the handoff agent, a circuit breaker stack, fan-out and in-VM parallel benchmarks.
+
 ## 0.2.1 (2026-09-20)
 
 - Hook runtime: `GET /events` captures its cursor before the headers go out, so a log line written the moment a client connects is streamed instead of waiting for the next snapshot. Rebuild images to pick it up.
@@ -13,6 +21,8 @@
 - `mvm playground`: a local web app over the whole SDK with images, fleet, calls, logs, cost, a parameterised probe, an API trace of every AWS call, a job panel and lease form, credentials and dry-run switches; standard library only.
 - `ImageBuilder.build(log=...)` reports build milestones; `FleetManager.run_params` exposes the exact RunMicrovm request; `FleetManager.run(client_token=...)` makes a launch idempotent.
 - Fixes from the live runs: orchestrator policies include `lambda:PassNetworkConnector`; the service log group is `/aws/lambda-microvms/<image>` (bootstrap grants both names, `tail_logs` tries the service name first); a token-less lease gets a fresh `clientToken` per launch.
+- Generated state machines carry the shard index in the Map items (the service exposes none inside a JSONata item processor), use unique state names, and retry throttled launches after 2 s instead of 10 s.
+- `FleetMonitor.job_status` bounds each member poll and reuses one executor; `/events` opens with the snapshot before queued lines.
 - Python 3.13 in CI.
 
 ## 0.1.0 (2026-09-13)

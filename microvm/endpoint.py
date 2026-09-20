@@ -129,12 +129,13 @@ class EndpointClient:
         raise EndpointError(f"{self.microvm_id} not serving {path} after {timeout}s")
 
     # -- job telemetry (HookApp built-in /status and /events) -------------------
-    def status(self, since: int | None = None) -> dict:
+    def status(self, since: int | None = None, *, timeout: float = 10, max_attempts: int = 6) -> dict:
         """The hook runtime's job snapshot (`GET /status`): phase, progress, counters,
         the log tail, and the lease state. `since` returns only log lines with a
-        sequence number above it."""
+        sequence number above it. `timeout` and `max_attempts` bound one poll, which
+        matters when many members are polled on a schedule."""
         path = "/status" if since is None else f"/status?since={int(since)}"
-        resp = self.get(path, timeout=10)
+        resp = self.get(path, timeout=timeout, max_attempts=max_attempts)
         if resp.status_code != 200:
             raise EndpointError(f"{self.microvm_id} answered {resp.status_code} on {path}")
         return resp.json()

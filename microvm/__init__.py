@@ -9,10 +9,10 @@ from microvm.config import PlaneConfig
 from microvm.endpoint import EndpointClient, EndpointError
 from microvm.fleet import Fleet, FleetManager
 from microvm.images import ImageBuilder, ImageBuildError
-from microvm.lease import Lease, LeasePolicy
+from microvm.lease import FanoutLimit, Lease, LeasePlan, LeasePlanRejected, LeasePolicy, plan_fanout
 from microvm.monitor import CostModel, FleetMonitor
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 __all__ = [
     "microvm_client",
@@ -24,6 +24,10 @@ __all__ = [
     "FleetManager",
     "Lease",
     "LeasePolicy",
+    "LeasePlan",
+    "LeasePlanRejected",
+    "FanoutLimit",
+    "plan_fanout",
     "EndpointClient",
     "EndpointError",
     "FleetMonitor",

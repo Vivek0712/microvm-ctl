@@ -7,25 +7,39 @@ derived from the callback id, so a replay after a crash gets the same VM back.
 `callback.result()` suspends the execution by raising a BaseException, so it is never
 wrapped in try/finally: each `except` branch terminates the VM itself.
 
+`lease_map` fans out: a plan step (the plane's sizing and pre-flight refusal), an
+optional approval callback, then `context.map` over the tasks with one
+`lease_with_relaunch` per item under the plan's concurrency.
+
 Requires `pip install microvm-ctl[durable]` (Python 3.11+). Importing this module
 without the SDK works; calling `lease_microvm` raises ImportError with the hint.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
-from typing import Any
+from typing import Any, Callable
 
 from microvm.lease import Lease, LeasePolicy
 
 try:  # the durable SDK is optional; keep the module importable without it
     from aws_durable_execution_sdk_python import (
+        CallbackError,
         CallbackExternalError,
         CallbackTimeoutError,
         durable_step,
     )
-    from aws_durable_execution_sdk_python.config import CallbackConfig, Duration, StepConfig, StepSemantics
+    from aws_durable_execution_sdk_python.config import (
+        CallbackConfig,
+        CompletionConfig,
+        Duration,
+        MapConfig,
+        StepConfig,
+        StepSemantics,
+        WaitForCallbackConfig,
+    )
     from aws_durable_execution_sdk_python.retries import RetryPresets
 
     _SDK_ERROR: ImportError | None = None
@@ -63,6 +77,16 @@ def _terminate(step, fm, microvm_id: str) -> dict:
         return {"terminated": microvm_id, "already_gone": True}
 
 
+@durable_step
+def _plan(step, fm, shards: int, baseline_mib: int, policy_dict: dict | None) -> dict:
+    """Size the fan-out (reads the memory quota once); the dict is what replays see."""
+    policy = LeasePolicy(**policy_dict) if policy_dict else None
+    plan = fm.plan(shards, baseline_mib, policy)
+    d = plan_dict(plan)
+    step.logger.info("plan: %s", d.get("summary"))
+    return d
+
+
 # ------------------------------------------------------------------ pure helpers
 def function_region(context) -> str:
     """The region the VM must call back to: the execution ARN's region, else the
@@ -80,6 +104,28 @@ def execution_name(context) -> str | None:
     if not arn:
         return None
     return arn.replace(":", "/").rstrip("/").rsplit("/", 1)[-1][:128] or None
+
+
+def _policy_dict(policy: LeasePolicy | None) -> dict | None:
+    return dataclasses.asdict(policy) if policy is not None else None
+
+
+def plan_dict(plan: Any) -> dict:
+    """A JSON-safe view of a `LeasePlan` (or anything shaped like one) that keeps the
+    fields `lease_map` reads back after a replay: rejected, needs_approval, concurrency,
+    and the one-sentence summary."""
+    if hasattr(plan, "to_dict"):
+        d = dict(plan.to_dict())
+    elif dataclasses.is_dataclass(plan):
+        d = dataclasses.asdict(plan)
+    else:
+        d = {k: v for k, v in vars(plan).items() if not k.startswith("_")}
+    for key in ("rejected", "needs_approval", "concurrency"):
+        d.setdefault(key, getattr(plan, key, None))
+    if "summary" not in d:
+        summary = getattr(plan, "summary", None)
+        d["summary"] = summary() if callable(summary) else summary
+    return json.loads(json.dumps(d, default=str))
 
 
 def _decode(raw: Any) -> Any:
@@ -179,3 +225,76 @@ def lease_with_relaunch(context, fm, image: str, task: dict, *, max_relaunches: 
         if outcome["status"] == "done" or not outcome.get("retryable"):
             return outcome
     return outcome
+
+
+# ------------------------------------------------------------------ the fan-out
+def lease_map(
+    context,
+    fm,
+    image: str,
+    tasks: list,
+    *,
+    policy: LeasePolicy | None = None,
+    label: str = "lease",
+    baseline_mib: int,
+    max_concurrency: int | None = None,
+    max_relaunches: int = 1,
+    approve: Callable[[str, dict], None] | None = None,
+    approval_timeout_s: int = 3600,
+    **kw,
+) -> dict:
+    """One lease per task, in parallel, under the plane's plan.
+
+    (1) step `{label}-plan`: `fm.plan(len(tasks), baseline_mib, policy)`; a rejected plan
+    returns `{"status": "rejected", "reason", "plan"}` and launches nothing. (2) When the
+    plan needs approval: with `approve`, `wait_for_callback` named `{label}-approval` whose
+    submitter calls `approve(callback_id, plan_dict)` (publish it somewhere a human or a
+    policy engine answers with SendDurableExecutionCallbackSuccess); a timeout or a failure
+    returns `{"status": "denied", ...}`; without `approve`, `{"status": "approval_required",
+    "plan"}`. (3) `context.map` named `{label}-map` over the tasks, `max_concurrency` the
+    plan's concurrency (or lower when given), each item `lease_with_relaunch(...,
+    label=f"{label}-{i}")`; extra keyword arguments (version, execution_role, heartbeat_s)
+    reach every lease. (4) `{"status": "done", "plan", "outcomes", "succeeded", "failed",
+    "errors"}` where `outcomes` are the per-shard outcome dicts in completion order,
+    `succeeded` counts status "done", and `errors` lists shards whose item raised."""
+    _require_sdk()
+    tasks = list(tasks)
+    plan = context.step(_plan(fm, len(tasks), int(baseline_mib), _policy_dict(policy)), name=f"{label}-plan")
+    if plan.get("rejected"):
+        return {"status": "rejected", "reason": plan["rejected"], "plan": plan}
+    if plan.get("needs_approval"):
+        if approve is None:
+            return {"status": "approval_required", "plan": plan}
+
+        def submitter(callback_id: str, _ctx) -> None:
+            approve(callback_id, plan)
+
+        try:
+            context.wait_for_callback(
+                submitter, name=f"{label}-approval",
+                config=WaitForCallbackConfig(timeout=Duration.from_seconds(int(approval_timeout_s))),
+            )
+        except CallbackTimeoutError as e:
+            reason = f"no approval within {approval_timeout_s}s: {e}"
+            return {"status": "denied", "reason": reason, "plan": plan}
+        except CallbackError as e:
+            return {"status": "denied", "reason": getattr(e, "message", None) or str(e), "plan": plan}
+
+    concurrency = int(plan.get("concurrency") or 1)
+    if max_concurrency is not None:
+        concurrency = max(1, min(concurrency, int(max_concurrency)))
+
+    def item(ctx, task, i, _all):
+        return lease_with_relaunch(ctx, fm, image, task, policy=policy, label=f"{label}-{i}",
+                                   max_relaunches=max_relaunches, **kw)
+
+    results = context.map(
+        tasks, item, name=f"{label}-map",
+        config=MapConfig(max_concurrency=concurrency, completion_config=CompletionConfig.all_completed()),
+    )
+    outcomes = list(results.get_results())
+    succeeded = sum(1 for o in outcomes if isinstance(o, dict) and o.get("status") == "done")
+    errors = [{"error_type": getattr(e, "error_type", None) or "Unknown",
+               "message": getattr(e, "message", None) or str(e)} for e in results.get_errors()]
+    return {"status": "done", "plan": plan, "outcomes": outcomes, "succeeded": succeeded,
+            "failed": len(tasks) - succeeded, "errors": errors}

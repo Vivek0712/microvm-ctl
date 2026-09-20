@@ -18,7 +18,17 @@ from typing import Callable
 
 from microvm.client import image_arn, microvm_client
 from microvm.config import TPS, PlaneConfig
-from microvm.lease import Lease, LeasePolicy, client_token, encode_payload
+from microvm.lease import (
+    FanoutLimit,
+    Lease,
+    LeasePlan,
+    LeasePlanRejected,
+    LeasePolicy,
+    client_token,
+    encode_payload,
+    fanout_limit,
+    plan_fanout,
+)
 from microvm.throttle import Throttled
 
 ACTIVE_STATES = {"PENDING", "RUNNING", "SUSPENDING", "SUSPENDED"}
@@ -203,6 +213,51 @@ class FleetManager:
             client_token=client_token(lease),
         )
 
+    # -- fan-out -----------------------------------------------------------------
+    def fanout_limit(self, baseline_mib: int, policy: LeasePolicy | None = None) -> FanoutLimit:
+        """How many leases of `baseline_mib` can be in flight at once, from the applied
+        memory quota (when Service Quotas answered) and the policy's max_concurrency."""
+        return fanout_limit(baseline_mib, policy or LeasePolicy(),
+                            memory_quota_gb=self.memory_quota_gb, launch_rate=self.tps("RunMicrovm"))
+
+    def plan(self, shards: int, baseline_mib: int, policy: LeasePolicy | None = None) -> LeasePlan:
+        """Size a fan-out of `shards` leases without launching anything."""
+        return plan_fanout(shards, baseline_mib, policy or LeasePolicy(),
+                           memory_quota_gb=self.memory_quota_gb, launch_rate=self.tps("RunMicrovm"))
+
+    def lease_many(
+        self,
+        image: str,
+        leases: list[Lease],
+        tasks: list[dict],
+        policy: LeasePolicy | None = None,
+        *,
+        baseline_mib: int,
+        version: str | None = None,
+        execution_role: str | None = None,
+        ingress: list[str] | None = None,
+        egress: list[str] | None = None,
+    ) -> list[Microvm]:
+        """Pre-flight: plan(len(leases), baseline_mib, policy).check(); then REFUSE (LeasePlanRejected)
+        if len(leases) > plan.concurrency ("N leases exceed the concurrency limit M; launch in waves");
+        launch through the shared bucket on the Fleet thread pool (max 8 workers), preserving order;
+        return the Microvm list."""
+        if len(leases) != len(tasks):
+            raise ValueError(f"{len(leases)} leases but {len(tasks)} tasks: pass one task per lease")
+        plan = self.plan(len(leases), baseline_mib, policy)
+        plan.check()
+        if len(leases) > plan.concurrency:
+            raise LeasePlanRejected(
+                f"{len(leases)} leases exceed the concurrency limit {plan.concurrency}; launch in waves")
+
+        def one(pair):
+            lease, task = pair
+            return self.lease(image, lease, task, policy, version=version, execution_role=execution_role,
+                              ingress=ingress, egress=egress)
+
+        with futures.ThreadPoolExecutor(max_workers=Fleet.MAX_WORKERS) as pool:
+            return list(pool.map(one, zip(leases, tasks)))
+
     def get(self, microvm_id: str) -> Microvm:
         return Microvm.from_api(self.api.get_microvm(microvmIdentifier=microvm_id))
 
@@ -240,6 +295,9 @@ class FleetManager:
 class Fleet:
     """Declarative fleet of microVMs from one image: scale up, down, drain."""
 
+    #: threads used for parallel launches and lifecycle sweeps
+    MAX_WORKERS = 8
+
     manager: FleetManager
     image: str
     version: str | None = None
@@ -251,7 +309,7 @@ class Fleet:
     egress: list[str] | None = None
     execution_role: str | None = None
     _pool: futures.ThreadPoolExecutor = field(
-        default_factory=lambda: futures.ThreadPoolExecutor(max_workers=8), repr=False
+        default_factory=lambda: futures.ThreadPoolExecutor(max_workers=Fleet.MAX_WORKERS), repr=False
     )
 
     # -- observation -------------------------------------------------------------

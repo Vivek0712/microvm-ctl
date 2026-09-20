@@ -11,7 +11,8 @@
     mvm drain IMAGE                        terminate the whole fleet
     mvm call ID /path [-X POST -d '{}']    authenticated request into the VM
     mvm status ID | watch ID               job telemetry from the hook runtime (/status, /events)
-    mvm lease asl|policy|run               Step Functions ASL, IAM statements, one manual lease
+    mvm watch --image NAME                 one live table for every leased VM of an image
+    mvm lease asl|policy|run|plan          Step Functions ASL, IAM statements, leases, fan-out sizing
     mvm top [--image NAME] [--watch]       live fleet dashboard
     mvm logs IMAGE                         CloudWatch tail
     mvm cost [--memory-gb 2 ...]           session economics
@@ -95,6 +96,26 @@ def cmd_quotas(args):
     if not applied:
         console.print("[dim]Service Quotas did not answer (missing servicequotas:GetServiceQuota?); "
                       "showing published defaults.[/]")
+    for line in fanout_tier_lines(mem):
+        console.print(line)
+
+
+FANOUT_TIERS_GB = (0.5, 1, 2, 4, 8)
+
+
+def fanout_tier_lines(memory_quota_gb) -> list[str]:
+    """One line per image size tier: how many can be in flight at once under the applied
+    memory quota, the same arithmetic `mvm lease plan` uses."""
+    from microvm.lease import DEFAULT_FANOUT_LIMIT, LeasePolicy, fanout_limit
+    if memory_quota_gb is None:
+        return [f"[dim]memory quota unknown: fan-outs default to {DEFAULT_FANOUT_LIMIT} at once "
+                f"(MVM_LEASE_MAX_CONCURRENCY overrides)[/]"]
+    policy = LeasePolicy()
+    lines = []
+    for tier in FANOUT_TIERS_GB:
+        lim = fanout_limit(int(tier * 1024), policy, memory_quota_gb=memory_quota_gb, launch_rate=1.0)
+        lines.append(f"{tier:g} GB images: [bold]{lim.limit}[/] at once")
+    return lines
 
 
 # ---------------------------------------------------------------- images
@@ -303,7 +324,88 @@ def cmd_status(args):
         console.print(_log_line(entry) if isinstance(entry, dict) else str(entry))
 
 
+def _answered(row: dict) -> bool:
+    """job_status gives a member that did not answer /status only microvm_id and error."""
+    return "phase" in row
+
+
+def _row_state(row: dict) -> str:
+    if not _answered(row):
+        return "[red]unreachable[/]"
+    if row.get("done"):
+        return "[red]failed[/]" if row.get("error") else "[bold green]done[/]"
+    if row.get("lost"):
+        return "[yellow]lost[/]"
+    return "[cyan]running[/]"
+
+
+def _fleet_job_view(rows: list[dict], image: str):
+    """The `mvm watch --image` body: one row per RUNNING member plus the aggregate footer."""
+    from rich.console import Group
+    t = Table(title=f"fleet job: {image}", header_style="bold magenta")
+    for c in ("microvm id", "lease id", "phase", "progress", "elapsed", "state"):
+        t.add_column(c)
+    for r in rows:
+        prog = r.get("progress")
+        if isinstance(prog, dict):
+            done, total = prog.get("done"), prog.get("total")
+            prog = f"{done}/{total}" if total else (str(done) if done is not None else "-")
+        elapsed = r.get("elapsed_s")
+        t.add_row(
+            str(r.get("microvm_id", "-")), str(r.get("lease_id") or "-"),
+            str(r.get("phase") or "-") if _answered(r) else f"[dim]{r.get('error') or '-'}[/]",
+            str(prog if prog is not None else "-"),
+            f"{elapsed:.0f} s" if isinstance(elapsed, (int, float)) else "-", _row_state(r),
+        )
+    return Group(t, fleet_job_footer(rows))
+
+
+def fleet_job_footer(rows: list[dict]) -> str:
+    """'done D/N, running R, lost L, slowest <id> <phase> <elapsed>' over job_status rows."""
+    answered = [r for r in rows if _answered(r)]
+    done = sum(1 for r in answered if r.get("done"))
+    lost = sum(1 for r in answered if r.get("lost") and not r.get("done"))
+    running = len(answered) - done - lost
+    text = f"done {done}/{len(rows)}, running {running}, lost {lost}"
+    if len(answered) < len(rows):
+        text += f", unreachable {len(rows) - len(answered)}"
+    timed = [r for r in answered if isinstance(r.get("elapsed_s"), (int, float))]
+    active = [r for r in timed if not r.get("done")] or timed
+    if active:
+        slow = max(active, key=lambda r: r["elapsed_s"])
+        text += f", slowest {slow.get('microvm_id')} {slow.get('phase') or '-'} {slow['elapsed_s']:.0f} s"
+    return text
+
+
+def fleet_job_finished(rows: list[dict], seen_members: bool) -> bool:
+    """Stop when every member is done, or when members were seen earlier and are now gone."""
+    if rows:
+        return all(r.get("done") for r in rows)
+    return seen_members
+
+
+def cmd_watch_image(args):
+    from rich.live import Live
+    mon = FleetMonitor(_cfg(args))
+    kw = {"port": args.port} if args.port else {}
+    rows = mon.job_status(args.image, **kw)
+    seen = bool(rows)
+    deadline = time.time() + args.timeout
+    with Live(_fleet_job_view(rows, args.image), refresh_per_second=2, console=console) as live:
+        while not fleet_job_finished(rows, seen) and time.time() < deadline:
+            time.sleep(args.interval)
+            rows = mon.job_status(args.image, **kw)
+            seen = seen or bool(rows)
+            live.update(_fleet_job_view(rows, args.image))
+    # the live view already ends on the footer; a trailing newline keeps the shell prompt off it
+    console.print()
+
+
 def cmd_watch(args):
+    if args.image:
+        return cmd_watch_image(args)
+    if not args.id:
+        sys.exit("mvm watch: pass a microVM ID or --image NAME")
     from rich.live import Live
     client = EndpointClient(_cfg(args), args.id, ports=[args.port] if args.port else None)
     snap = client.status()
@@ -318,9 +420,41 @@ def cmd_watch(args):
 
 
 # ---------------------------------------------------------------- leases
+POLICY_FLAGS = (
+    ("budget", "budget_s"), ("heartbeat", "heartbeat_timeout_s"), ("slack", "slack_s"),
+    ("max_concurrency", "max_concurrency"), ("max_vm_seconds", "max_vm_seconds"),
+    ("approval_usd", "approval_usd"),
+)
+
+
 def _lease_policy(args):
+    """LeasePolicy from the MVM_LEASE_* environment, then any flag that was given."""
     from microvm.lease import LeasePolicy
-    return LeasePolicy(budget_s=args.budget, heartbeat_timeout_s=args.heartbeat, slack_s=args.slack)
+    policy = LeasePolicy.from_env()
+    for flag, field in POLICY_FLAGS:
+        value = getattr(args, flag, None)
+        if value is not None:
+            setattr(policy, field, value)
+    return policy
+
+
+def _baseline_mib(args, cfg) -> int:
+    """--baseline-mib when given, else the image version's minimumMemoryInMiB."""
+    given = getattr(args, "baseline_mib", None)
+    if given:
+        return given
+    return ImageBuilder(cfg).baseline_mib(args.image, getattr(args, "version", None))
+
+
+def _fill_template(obj, i: int):
+    """Replace `{i}` in every string value of a JSON-like object with the shard index."""
+    if isinstance(obj, str):
+        return obj.replace("{i}", str(i))
+    if isinstance(obj, list):
+        return [_fill_template(v, i) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _fill_template(v, i) for k, v in obj.items()}
+    return obj
 
 
 def _image_arn_offline(image: str, region: str, role_arn: str | None, profile) -> str:
@@ -341,12 +475,38 @@ def cmd_lease_asl(args):
     role = args.execution_role or cfg.execution_role_arn
     if not role:
         sys.exit("mvm lease asl: --execution-role ARN (or MVM_EXECUTION_ROLE_ARN) is required")
+    kw = {}
+    if args.map:
+        from microvm.integrations.stepfunctions import FanoutSpec
+        max_concurrency = args.max_concurrency
+        if max_concurrency is None:
+            max_concurrency = _computed_fanout_limit(args, cfg)
+        kw["fanout"] = FanoutSpec(
+            items_expr=args.items_expr, max_concurrency=max_concurrency,
+            approval_topic_arn=args.approval_topic, approve_above_shards=args.approve_above_shards,
+        )
     asl = lease_state_machine(
         image_arn=_image_arn_offline(args.image, cfg.region, role, cfg.profile),
         execution_role_arn=role, policy=_lease_policy(args), region=cfg.region,
-        name=args.name, task_expr=args.task_expr, heartbeat_s=args.heartbeat_every,
+        name=args.name, task_expr=args.task_expr, heartbeat_s=args.heartbeat_every, **kw,
     )
     print(json.dumps(asl, indent=2))
+
+
+def _computed_fanout_limit(args, cfg) -> int:
+    """Map MaxConcurrency when --max-concurrency is omitted: the plane's fan-out limit for the
+    image's baseline, with the reason on stderr so the generated ASL is explainable."""
+    from microvm.lease import DEFAULT_FANOUT_LIMIT
+    try:
+        baseline = _baseline_mib(args, cfg)
+        limit = FleetManager(cfg).fanout_limit(baseline, _lease_policy(args))
+    except Exception as e:  # no credentials, unknown image: still emit a usable machine
+        print(f"mvm lease asl: could not compute the fan-out limit ({e}); "
+              f"using MaxConcurrency {DEFAULT_FANOUT_LIMIT} (default)", file=sys.stderr)
+        return DEFAULT_FANOUT_LIMIT
+    print(f"mvm lease asl: MaxConcurrency {limit.limit} ({limit.reason}; "
+          f"{baseline} MiB baseline)", file=sys.stderr)
+    return limit.limit
 
 
 def cmd_lease_policy(args):
@@ -363,6 +523,8 @@ def cmd_lease_policy(args):
 def cmd_lease_run(args):
     from microvm.lease import Lease
     cfg = _cfg(args)
+    if args.shards is not None:
+        return cmd_lease_run_many(args, cfg)
     if args.kind != "none" and not args.token:
         sys.exit(f"mvm lease run: --token is required for kind {args.kind}")
     try:
@@ -381,6 +543,95 @@ def cmd_lease_run(args):
     if args.wait:
         vm = fm.wait_until(vm.microvm_id, "RUNNING")
         console.print(f"  now {_state(vm.state)}; follow it with: mvm watch {vm.microvm_id}")
+
+
+def cmd_lease_run_many(args, cfg):
+    """`mvm lease run IMAGE --shards N`: plan, refuse or launch every shard through lease_many."""
+    from microvm.lease import Lease, LeasePlanRejected
+    if args.shards < 1:
+        sys.exit(f"mvm lease run: --shards must be at least 1, got {args.shards}")
+    kind = args.kind if (args.kind != "none" or not args.token_template) else "none"
+    if args.token_template and kind == "none":
+        sys.exit("mvm lease run: --token-template needs --kind (sfn, durable, http, sqs, eventbridge)")
+    if kind != "none" and not args.token_template:
+        sys.exit(f"mvm lease run: --token-template with {{i}} is required for kind {kind} and --shards")
+    try:
+        template = json.loads(args.task_template) if args.task_template else (
+            json.loads(args.task) if args.task else {})
+    except ValueError as e:
+        sys.exit(f"mvm lease run: --task-template is not valid JSON: {e}")
+    if not isinstance(template, dict):
+        sys.exit("mvm lease run: --task-template must be a JSON object")
+    leases, tasks = [], []
+    for i in range(args.shards):
+        token = args.token_template.replace("{i}", str(i)) if args.token_template else ""
+        lease_id = args.id.replace("{i}", str(i)) if args.id else None
+        leases.append(Lease(kind=kind, token=token, region=cfg.region, target=args.target,
+                            heartbeat_s=args.heartbeat_every, id=lease_id))
+        tasks.append(_fill_template(template, i))
+    policy = _lease_policy(args)
+    fm = FleetManager(cfg)
+    baseline = _baseline_mib(args, cfg)
+    plan = fm.plan(args.shards, baseline, policy)
+    console.print(plan.summary())
+    if plan.rejected:
+        sys.exit(2)
+    if plan.needs_approval and not args.approve:
+        print(f"mvm lease run: the plan needs approval (worst case ${plan.worst_case_usd:.2f} above "
+              f"approval_usd ${policy.approval_usd:g}); re-run with --approve", file=sys.stderr)
+        sys.exit(3)
+    if args.shards > plan.concurrency:
+        print(f"mvm lease run: {args.shards} leases exceed the concurrency limit {plan.concurrency}; "
+              f"launch in waves (--shards {plan.concurrency} at a time)", file=sys.stderr)
+        sys.exit(2)
+    try:
+        vms = fm.lease_many(args.image, leases, tasks, policy, baseline_mib=baseline, version=args.version,
+                            execution_role=args.execution_role)
+    except LeasePlanRejected as e:
+        sys.exit(f"mvm lease run: {e}")
+    for i, vm in enumerate(vms):
+        console.print(f"[bold green]✓[/] shard {i}: {vm.microvm_id}  {_state(vm.state)}  "
+                      f"[link=https://{vm.endpoint}]{vm.endpoint}[/link]  lease {kind}")
+    if args.wait:
+        for vm in vms:
+            fm.wait_until(vm.microvm_id, "RUNNING")
+        console.print(f"  all {len(vms)} RUNNING; follow them with: mvm watch --image {args.image}")
+
+
+def _plan_table(plan) -> Table:
+    lim = plan.limit
+    t = Table(title=f"lease plan: {plan.shards} shards", header_style="bold magenta", show_header=False)
+    t.add_column("field", style="cyan")
+    t.add_column("value")
+    t.add_row("shards", str(plan.shards))
+    t.add_row("baseline", f"{plan.baseline_mib} MiB")
+    t.add_row("memory quota", f"{lim.memory_quota_gb:g} GB" if lim.memory_quota_gb is not None
+              else "[dim]unknown[/]")
+    t.add_row("launch rate", f"{lim.launch_rate:g}/s")
+    t.add_row("concurrency", f"{plan.concurrency}  [dim]({lim.reason})[/]")
+    t.add_row("waves", str(plan.waves))
+    t.add_row("launch to all running", f"~{plan.launch_to_all_running_s:.1f} s")
+    t.add_row("worst case VM-s", str(plan.worst_case_vm_seconds))
+    t.add_row("worst case USD", f"${plan.worst_case_usd:.4f}")
+    t.add_row("approval needed", "[yellow]yes[/]" if plan.needs_approval else "no")
+    t.add_row("rejected", f"[red]{plan.rejected}[/]" if plan.rejected else "no")
+    return t
+
+
+def cmd_lease_plan(args):
+    """Exit 0 when the plan can launch, 2 when it is rejected, 3 when it needs approval."""
+    cfg = _cfg(args)
+    fm = FleetManager(cfg)
+    plan = fm.plan(args.shards, _baseline_mib(args, cfg), _lease_policy(args))
+    if args.json:
+        print(json.dumps(plan.to_dict(), indent=2))
+    else:
+        console.print(_plan_table(plan))
+        console.print(plan.summary())
+    if plan.rejected:
+        sys.exit(2)
+    if plan.needs_approval:
+        sys.exit(3)
 
 
 def cmd_playground(args):
@@ -486,21 +737,36 @@ def main(argv: list[str] | None = None):
     st.add_argument("--port", type=int, default=None, help="non-default app port")
     st.set_defaults(fn=cmd_status)
 
-    w = sub.add_parser("watch", help="live job table plus streamed log lines (GET /events)")
-    w.add_argument("id")
+    w = sub.add_parser("watch", help="live job table for one VM (GET /events) or every VM of an image")
+    w.add_argument("id", nargs="?", help="microVM id (omit with --image)")
+    w.add_argument("--image", default=None, help="one table for every RUNNING member of this image")
     w.add_argument("--port", type=int, default=None, help="non-default app port")
+    w.add_argument("--interval", type=float, default=2, help="seconds between polls with --image")
     w.add_argument("--timeout", type=float, default=600, help="stop after N seconds")
     w.set_defaults(fn=cmd_watch)
 
     le = sub.add_parser("lease", help="hand a VM a task through a lease").add_subparsers(
         dest="sub", required=True)
 
-    def _policy_flags(sp):
-        sp.add_argument("--budget", type=int, default=900,
-                        help="seconds the orchestrator waits (task timeout)")
-        sp.add_argument("--heartbeat", type=int, default=120, help="heartbeat timeout in seconds")
-        sp.add_argument("--slack", type=int, default=120, help="VM outlives the budget by this many seconds")
-        sp.add_argument("--heartbeat-every", type=int, default=30, help="seconds between VM heartbeats")
+    def _policy_flags(sp, heartbeat_every=True):
+        sp.add_argument("--budget", type=int, default=None,
+                        help="seconds the orchestrator waits (task timeout; MVM_LEASE_BUDGET_S or 900)")
+        sp.add_argument("--heartbeat", type=int, default=None,
+                        help="heartbeat timeout in seconds (MVM_LEASE_HEARTBEAT_TIMEOUT_S or 120)")
+        sp.add_argument("--slack", type=int, default=None,
+                        help="VM outlives the budget by this many seconds (MVM_LEASE_SLACK_S or 120)")
+        sp.add_argument("--max-concurrency", type=int, default=None,
+                        help="VMs in flight per fan-out (MVM_LEASE_MAX_CONCURRENCY; default: memory quota)")
+        sp.add_argument("--max-vm-seconds", type=int, default=None,
+                        help="worst-case VM-seconds a fan-out may commit to (MVM_LEASE_MAX_VM_SECONDS)")
+        sp.add_argument("--approval-usd", type=float, default=None,
+                        help="worst-case USD above which a plan needs approval (MVM_LEASE_APPROVAL_USD)")
+        if heartbeat_every:
+            sp.add_argument("--heartbeat-every", type=int, default=30, help="seconds between VM heartbeats")
+
+    def _baseline_flag(sp):
+        sp.add_argument("--baseline-mib", type=int, default=None,
+                        help="image memory baseline in MiB (default: read from the image version)")
 
     la = le.add_parser("asl", help="print the Step Functions state machine (JSONata) for one lease")
     la.add_argument("--image", required=True, help="image name or ARN")
@@ -508,6 +774,15 @@ def main(argv: list[str] | None = None):
                     help="VM execution role ARN (default: MVM_EXECUTION_ROLE_ARN)")
     la.add_argument("--name", default="Lease", help="name of the lease state")
     la.add_argument("--task-expr", default="$states.input", help="JSONata expression for the task")
+    la.add_argument("--map", action="store_true",
+                    help="emit a Map over --items-expr: one lease per item, MaxConcurrency from the plane")
+    la.add_argument("--items-expr", default="$states.input.shards",
+                    help="JSONata array of task objects for --map")
+    la.add_argument("--approval-topic", default=None,
+                    help="SNS topic ARN: plans above --approve-above-shards wait for a task token")
+    la.add_argument("--approve-above-shards", type=int, default=None,
+                    help="shard count above which the Map waits for approval on --approval-topic")
+    _baseline_flag(la)
     _policy_flags(la)
     la.set_defaults(fn=cmd_lease_asl)
 
@@ -518,18 +793,37 @@ def main(argv: list[str] | None = None):
     lp.add_argument("--execution-role", default=None, help="VM execution role for iam:PassRole")
     lp.set_defaults(fn=cmd_lease_policy)
 
-    lr = le.add_parser("run", help="launch one lease by hand (manual tests)")
+    lr = le.add_parser("run", help="launch one lease by hand, or --shards N of them through the plan")
     lr.add_argument("image")
-    lr.add_argument("--kind", required=True, choices=["sfn", "durable", "http", "sqs", "eventbridge", "none"])
+    lr.add_argument("--kind", default="none",
+                    choices=["sfn", "durable", "http", "sqs", "eventbridge", "none"])
     lr.add_argument("--token", default=None, help="task token, callback id, or bearer (not for kind none)")
     lr.add_argument("--target", default=None, help="http URL, SQS queue URL, or event bus name")
     lr.add_argument("--task", default=None, help="task JSON (pointers, not bodies; 4096 chars total)")
-    lr.add_argument("--id", default=None, help="human label carried as lease.id")
+    lr.add_argument("--id", default=None, help="human label carried as lease.id ({i} = shard index)")
     lr.add_argument("--version", help="image version (default: latest ACTIVE)")
     lr.add_argument("--execution-role", default=None)
     lr.add_argument("--wait", action="store_true", help="poll until RUNNING")
+    lr.add_argument("--shards", type=int, default=None,
+                    help="launch N leases at once after planning them (refuses above the limit)")
+    lr.add_argument("--task-template", default=None,
+                    help="task JSON for --shards; {i} in string values becomes the shard index")
+    lr.add_argument("--token-template", default=None,
+                    help="per-shard token for --shards with a kind other than none; {i} = shard index")
+    lr.add_argument("--approve", action="store_true",
+                    help="launch even when the plan's worst case is above approval_usd")
+    _baseline_flag(lr)
     _policy_flags(lr)
     lr.set_defaults(fn=cmd_lease_run)
+
+    lpl = le.add_parser("plan", help="size a fan-out: concurrency, waves, launch time, worst case cost")
+    lpl.add_argument("--image", required=True, help="image name (baseline read from its ACTIVE version)")
+    lpl.add_argument("--shards", type=int, required=True, help="how many leases the fan-out launches")
+    lpl.add_argument("--version", default=None, help="image version to read the baseline from")
+    lpl.add_argument("--json", action="store_true", help="print the plan as JSON")
+    _baseline_flag(lpl)
+    _policy_flags(lpl, heartbeat_every=False)
+    lpl.set_defaults(fn=cmd_lease_plan)
 
     tp = sub.add_parser("top", help="live fleet dashboard")
     tp.add_argument("--image")

@@ -184,6 +184,122 @@ def test_dry_run_lease_returns_request_with_payload_and_client_token(pg):
     assert pg.trace[-1]["service"] == "dry-run"
 
 
+class _Limit:
+    def __init__(self, limit, reason):
+        self.limit, self.reason, self.by_memory, self.by_policy = limit, reason, 4, limit
+        self.memory_quota_gb, self.launch_rate = 8.0, 0.8
+
+
+class _Plan:
+    """What FleetManager.plan (section A) returns, reduced to the fields the route reads."""
+
+    def __init__(self, shards, baseline_mib, policy):
+        limit = policy.max_concurrency if policy.max_concurrency is not None else 4
+        self.shards, self.baseline_mib, self.policy = shards, baseline_mib, policy
+        reason = "policy max_concurrency" if policy.max_concurrency is not None else "default"
+        self.limit = _Limit(limit, reason)
+        self.concurrency = min(shards, limit)
+        self.waves = -(-shards // self.concurrency) if self.concurrency else 0
+        self.launch_to_all_running_s = 3.5
+        self.worst_case_vm_seconds = shards * policy.max_duration()
+        self.worst_case_usd = round(self.worst_case_vm_seconds * baseline_mib / 1024 * 0.0000175139, 4)
+        self.needs_approval = policy.approval_usd is not None and self.worst_case_usd > policy.approval_usd
+        self.rejected = "baseline 16384 MiB exceeds the memory quota 8 GB" if baseline_mib > 8192 else None
+
+    def summary(self):
+        return (f"{self.shards} shards on {self.baseline_mib} MiB: {self.concurrency} at a time "
+                f"({self.limit.reason}), {self.waves} waves, worst case ${self.worst_case_usd}")
+
+
+class PlanningManager(FakeManager):
+    def __init__(self, members):
+        super().__init__(members)
+        self.launched = []
+
+    def plan(self, shards, baseline_mib, policy=None):
+        from microvm.lease import LeasePolicy
+        return _Plan(shards, baseline_mib, policy or LeasePolicy())
+
+    def lease_many(self, image, leases, tasks, policy=None, *, baseline_mib, **kw):
+        self.launched.append((image, [ls.id for ls in leases], tasks, baseline_mib))
+        return [_vm(i, "RUNNING") for i in range(len(leases))]
+
+
+@pytest.fixture()
+def pgs(pg, monkeypatch):
+    fm = PlanningManager([])
+    monkeypatch.setattr(pg, "fm", lambda: fm)
+    return pg
+
+
+def test_dry_run_shards_logs_the_plan_and_returns_the_first_request(pgs, monkeypatch):
+    monkeypatch.delenv("MVM_LEASE_MAX_CONCURRENCY", raising=False)
+    body = {"image": "img", "kind": "none", "shards": 3, "id": "fan", "baseline_mib": 2048, "budget": 600,
+            "slack": 60, "task_template": {"steps": ["echo shard {i}", "sleep 1"], "env": {"SHARD": "{i}"}}}
+    status, job = pgs.api("POST", "/api/lease/run", {}, body)
+    assert status == 200 and job["kind"] == "lease" and job["params"]["shards"] == 3
+    job = _wait(pgs, job["id"])
+    assert job.status == "done", job.error
+    first = job.events[0]
+    assert first["msg"].startswith("3 shards on 2048 MiB: 3 at a time (default)")  # the plan sentence, first
+    assert first["data"]["plan"]["concurrency"] == 3 and first["data"]["plan"]["rejected"] is None
+    leases = job.events[1]["data"]
+    assert [ls["id"] for ls in leases["leases"]] == ["fan-0", "fan-1", "fan-2"]
+    assert leases["tasks"][2] == {"steps": ["echo shard 2", "sleep 1"], "env": {"SHARD": "2"}}
+    assert len(set(leases["client_tokens"])) == 3  # kind none: one clientToken per shard, not one VM
+    r = job.result
+    assert r["dry_run"] is True and r["operation"] == "RunMicrovm" and r["shards"] == 3
+    assert r["lease_ids"] == ["fan-0", "fan-1", "fan-2"] and r["plan"]["waves"] == 1
+    payload = json.loads(r["params"]["runHookPayload"])
+    assert payload["lease"]["id"] == "fan-0" and payload["task"]["steps"][0] == "echo shard 0"
+    assert r["params"]["maximumDurationInSeconds"] == 660
+    assert pgs.trace[-1]["service"] == "dry-run" and pgs.fm().launched == []
+
+
+def test_shards_above_the_concurrency_limit_are_refused_before_launch(pgs, monkeypatch):
+    """MVM_LEASE_MAX_CONCURRENCY=2 (LeasePolicy.from_env) caps the fan-out: 3 shards is a 400."""
+    monkeypatch.setenv("MVM_LEASE_MAX_CONCURRENCY", "2")
+    body = {"image": "img", "shards": 3, "baseline_mib": 2048, "task": {"steps": ["echo {i}"]}}
+    status, r = pgs.api("POST", "/api/lease/run", {}, body)
+    assert status == 400
+    assert r["error"] == "3 leases exceed the concurrency limit 2 (policy max_concurrency); launch in waves"
+    assert pgs.fm().launched == [] and not [j for j in pgs.jobs.values() if j.params.get("shards") == 3]
+    # the body can lift the ceiling explicitly; a rejected plan is still a 400 with the reason
+    status, _ = pgs.api("POST", "/api/lease/run", {}, {**body, "max_concurrency": 3})
+    assert status == 200
+    status, r = pgs.api("POST", "/api/lease/run", {}, {**body, "max_concurrency": 3, "baseline_mib": 16384})
+    assert status == 400 and r["error"] == "plan rejected: baseline 16384 MiB exceeds the memory quota 8 GB"
+
+
+def test_single_lease_path_ignores_shards_of_one(pgs):
+    """shards=1 is the unchanged single-lease path: FleetManager.lease, no plan."""
+    body = {"image": "img", "kind": "none", "shards": 1, "task": {"steps": ["echo hi"]}, "id": "one"}
+    status, job = pgs.api("POST", "/api/lease/run", {}, body)
+    job = _wait(pgs, job["id"])
+    assert job.status == "done" and "shards" not in job.params
+    assert json.loads(job.result["params"]["runHookPayload"])["lease"]["id"] == "one"
+
+
+def test_fleet_jobs_endpoint_answers_with_the_sample_fleet_in_dry_run(pg, monkeypatch):
+    import microvm.playground.server as srv
+    monkeypatch.setattr(srv.FleetMonitor, "job_status", _no_aws)  # ListMicrovms cannot answer
+    status, r = pg.api("GET", "/api/fleet/jobs", {"image": ["code-sandbox"]}, None)
+    assert status == 200 and r["sample"] is True and r["image"] == "code-sandbox"
+    ids = [row["microvm_id"] for row in r["items"]]
+    assert ids == ["mvm-0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d", "mvm-1b2c3d4e-5f6a-7b8c-9d0e-1f2a3b4c5d6e"]
+    for row in r["items"]:
+        assert set(row) == {"microvm_id", "lease_id", "phase", "progress", "elapsed_s", "done", "lost",
+                            "error"}
+        assert row["phase"] in {"init", "load", "work", "flush", "done"}
+        assert row["lease_id"].startswith("sample-")
+    s = r["summary"]
+    assert s["total"] == 2 and s["done"] + s["running"] + s["lost"] == 2 and s["slowest"]["microvm_id"] in ids
+    status, r = pg.api("GET", "/api/fleet/jobs", {"image": ["notebook"]}, None)  # only a SUSPENDED member
+    assert status == 200 and r["items"] == [] and r["summary"]["slowest"] is None
+    status, r = pg.api("GET", "/api/fleet/jobs", {}, None)
+    assert status == 400 and "image is required" in r["error"]
+
+
 def test_lease_validation_errors_are_400(pg):
     status, body = pg.api("POST", "/api/lease/run", {}, {"image": "img", "kind": "sfn"})
     assert status == 400 and "token is required" in body["error"]
@@ -226,3 +342,13 @@ def test_credentials_endpoint_applies_env_and_reports_verification(pg, monkeypat
     assert status == 400
     pg.api("POST", "/api/credentials/clear", {}, {})
     assert "AWS_ACCESS_KEY_ID" not in os.environ
+
+
+def test_state_is_only_written_by_a_serving_process(tmp_path, monkeypatch):
+    monkeypatch.setattr(Playground, "STATE_DIR", tmp_path)
+    p = Playground(PlaneConfig(region="us-east-1"), dry_run=True)
+    p.save_state()
+    assert not (tmp_path / "state.json").exists()
+    p.persist = True
+    p.save_state()
+    assert (tmp_path / "state.json").exists()
