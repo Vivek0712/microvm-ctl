@@ -607,6 +607,9 @@ class HookApp:
 
             def _events(self):
                 """SSE: `data:` per new log line, `event: snapshot` every 5 s, until the client leaves."""
+                # capture the cursor before the client can see our headers: anything logged from the
+                # moment the client is connected must arrive as a `data:` line, never be skipped
+                seq = app.job.seq
                 try:
                     self.send_response(200)
                     self.send_header("Content-Type", "text/event-stream")
@@ -615,7 +618,6 @@ class HookApp:
                     self.end_headers()
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     return
-                seq = app.job.seq
                 deadline, next_snapshot = time.time() + 3600, 0.0
                 try:
                     while time.time() < deadline and not self.server.stopping.is_set():
