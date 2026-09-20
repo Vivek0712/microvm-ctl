@@ -52,7 +52,9 @@ fm.tps("RunMicrovm")                      # effective launches per second
 fm.memory_quota_gb                        # applied memory ceiling, or None
 
 vm = fm.run("my-sandbox", version=None, idle_policy=IdlePolicy(), run_payload=None,
-            max_duration=None, ingress=None, egress=None, execution_role=None)
+            max_duration=None, ingress=None, egress=None, execution_role=None,
+            client_token=None)                # 1 to 128 chars; a replayed launch with the same token returns the same VM
+fm.run_params("my-sandbox", ...)            # the exact RunMicrovm request, for logging or dry runs
 fm.get(vm.microvm_id)                     # Microvm(microvm_id, state, image_arn, image_version, started_at, endpoint)
 fm.wait_until(vm.microvm_id, "RUNNING", timeout=120)
 fm.suspend(vm.microvm_id); fm.resume(vm.microvm_id); fm.terminate(vm.microvm_id)
@@ -100,16 +102,34 @@ resp = client.post("/execute", json={"code": "print(1)"}, timeout=60,
 client.get("/state", port=9100)
 client.wait_ready("/healthz", timeout=90)   # seconds to first 200
 client.shell_token(minutes=15)              # for SHELL_INGRESS VMs
+client.status(since=None)                   # the hook runtime's job snapshot (GET /status)
+for event in client.watch(timeout=600):     # parsed JSON from GET /events (SSE): log lines and snapshots
+    ...
 ```
 
 Tokens are minted lazily with `CreateMicrovmAuthToken`, scoped to `ports` (or all ports), and cached until 80% of their TTL. Per request: 429 backs off with jitter up to 8 s; 502 is retried every 2 s for `resume_patience` seconds because the first request to a suspended VM pays the resume; 403 re-mints the token once and retries with the caller's headers intact. Anything else is returned to you as a normal `requests.Response`.
+
+`status()` returns the `HookApp` job snapshot: `phase`, `elapsed_s`, `progress`, `counters`, the last 50 log lines, `lease` (or `None`), `microvm_id`, and `seq`; `since=<seq>` returns only newer log lines. `watch()` streams `/events` and yields each log line and each periodic snapshot as a dict, stopping when a snapshot reports the lease done, after `timeout` seconds, or when the VM closes the stream.
+
+### Leases
+
+```python
+from microvm import Lease, LeasePolicy
+
+lease = Lease(kind="sfn", token=task_token, region="us-east-1", target=None, heartbeat_s=30, id="exec-1")
+policy = LeasePolicy(budget_s=900, heartbeat_timeout_s=120, slack_s=120)
+vm = fm.lease("handoff-agent", lease, {"pr": 7}, policy, version=None, execution_role=None,
+              ingress=None, egress=None)
+```
+
+`fm.lease` is `fm.run` with the lease encoded into `run_payload`, `policy.idle_policy()` (no auto-resume, `max_idle` = budget), `max_duration = policy.max_duration()` (budget plus slack, capped at 28,800), and `client_token = client_token(lease)`, so a replayed launch returns the same VM. `kind` is one of `sfn`, `durable`, `http`, `sqs`, `eventbridge`, `none`; `target` is required for the three generic kinds. `microvm.lease` also exposes `encode_payload`, `decode_payload`, and `client_token`. See [Integrations](integrations.md).
 
 ## FleetMonitor and CostModel
 
 ```python
 mon = FleetMonitor(cfg)
 mon.snapshot(image=None)              # {"total", "by_state", "members"}
-mon.tail_logs("my-sandbox", minutes=15, limit=200)
+mon.tail_logs("my-sandbox", minutes=15, limit=200)   # /aws/lambda-microvms/<image>, then the old /aws/lambda/microvms/<image>
 mon.estimate_fleet_cost_per_hour("my-sandbox", memory_gb=2)
 
 model = CostModel(memory_gb=2, snapshot_gb=0.61)

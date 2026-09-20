@@ -1,0 +1,862 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>microvm-ctl playground</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#0e1116;--panel:#151a21;--panel-2:#1b2129;--panel-3:#222a34;--line:#262e39;--line-2:#34404e;
+  --ink:#e6ebf1;--ink-2:#a3aebc;--ink-3:#6f7b8b;
+  --ember:#ff7a45;--ember-ink:#ffb391;--ember-soft:rgba(255,122,69,.14);
+  --plane:#6ea2ff;--plane-soft:rgba(110,162,255,.14);
+  --ok:#4cc27a;--ok-soft:rgba(76,194,122,.14);--warn:#e0a54a;--warn-soft:rgba(224,165,74,.14);--bad:#ff6b6b;--bad-soft:rgba(255,107,107,.14);
+  --pending:#e0a54a;--running:#4cc27a;--suspending:#e0a54a;--suspended:#5e9df0;--terminating:#ff6b6b;--terminated:#7c8794;
+  --radius:10px;--shadow:0 10px 30px -18px rgba(0,0,0,.8);
+}
+@media (prefers-color-scheme: light){
+  :root{color-scheme:light;
+    --bg:#f3f5f8;--panel:#ffffff;--panel-2:#f6f8fa;--panel-3:#eaeef3;--line:#d9dfe7;--line-2:#c3ccd7;
+    --ink:#131920;--ink-2:#4b5563;--ink-3:#7b8593;
+    --ember:#c8441b;--ember-ink:#8a2e10;--ember-soft:rgba(200,68,27,.10);
+    --plane:#2a5fb8;--plane-soft:rgba(42,95,184,.10);
+    --ok:#1f8a4c;--ok-soft:rgba(31,138,76,.12);--warn:#b7791f;--warn-soft:rgba(183,121,31,.12);--bad:#c0392b;--bad-soft:rgba(192,57,43,.12);
+    --pending:#b7791f;--running:#1f8a4c;--suspending:#b7791f;--suspended:#2a78d6;--terminating:#c0392b;--terminated:#6b7480;
+    --shadow:0 10px 30px -18px rgba(19,25,32,.35);}
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--plane)}
+code,pre,.mono,input.mono,textarea{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+button,input,select,textarea{font:inherit;color:inherit}
+h1,h2,h3{font-family:"Bricolage Grotesque","IBM Plex Sans",sans-serif;margin:0;line-height:1.15;letter-spacing:-.01em}
+h2{font-size:1.5rem;font-weight:800}
+h3{font-size:1rem;font-weight:600;color:var(--ink);margin:0 0 10px}
+.muted{color:var(--ink-3)}
+.small{font-size:.8rem}
+
+/* ---- shell ---- */
+.app{display:grid;grid-template-columns:220px minmax(0,1fr);grid-template-rows:56px minmax(0,1fr);height:100vh}
+.top{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 18px;border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{font-family:"Bricolage Grotesque",sans-serif;font-weight:800;font-size:1.05rem;letter-spacing:-.01em;display:flex;align-items:center;gap:10px}
+.brand i{width:10px;height:10px;border-radius:50%;background:var(--ember);box-shadow:0 0 0 4px var(--ember-soft)}
+.chips{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chip{font-family:"IBM Plex Mono",monospace;font-size:.74rem;padding:3px 9px;border-radius:999px;border:1px solid var(--line-2);background:var(--panel-2);color:var(--ink-2);white-space:nowrap}
+.chip b{color:var(--ink);font-weight:500}
+.chip.warn{border-color:var(--warn);color:var(--warn)}
+.top .spacer{flex:1}
+.switch{display:flex;align-items:center;gap:8px;font-size:.8rem;color:var(--ink-2);cursor:pointer;user-select:none}
+.switch input{appearance:none;width:36px;height:20px;border-radius:999px;background:var(--panel-3);border:1px solid var(--line-2);position:relative;cursor:pointer;margin:0}
+.switch input::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--ink-3);transition:transform .15s,background .15s}
+.switch input:checked{background:var(--ember-soft);border-color:var(--ember)}
+.switch input:checked::after{transform:translateX(16px);background:var(--ember)}
+nav.side{border-right:1px solid var(--line);background:var(--panel);padding:14px 10px;overflow-y:auto}
+nav.side button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:none;border:0;padding:9px 12px;border-radius:8px;color:var(--ink-2);cursor:pointer;font-weight:500}
+nav.side button:hover{background:var(--panel-2);color:var(--ink)}
+nav.side button.active{background:var(--ember-soft);color:var(--ember-ink)}
+nav.side button .k{font-family:"IBM Plex Mono",monospace;font-size:.7rem;color:var(--ink-3);margin-left:auto}
+nav.side .grp{font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);padding:14px 12px 4px}
+main{overflow-y:auto;padding:22px 26px 60px}
+.view{display:none;max-width:1280px}
+.view.active{display:block}
+.view-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:18px;flex-wrap:wrap}
+.view-head p{margin:4px 0 0;color:var(--ink-2);max-width:70ch}
+
+/* ---- cards & layout ---- */
+.grid{display:grid;gap:16px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow);min-width:0}
+.card.flat{box-shadow:none;background:var(--panel-2)}
+.card h3{display:flex;align-items:center;gap:10px}
+.card h3 .right{margin-left:auto;font-weight:400;font-size:.78rem;color:var(--ink-3)}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.tiles div{background:var(--panel);padding:10px 12px}
+.tiles b{display:block;font-family:"Bricolage Grotesque",sans-serif;font-size:1.35rem;font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.tiles small{color:var(--ink-3);font-size:.74rem;line-height:1.3;display:block}
+.tiles .ok b{color:var(--ok)}.tiles .bad b{color:var(--bad)}.tiles .ember b{color:var(--ember)}
+
+/* ---- forms ---- */
+.form{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px 12px}
+.form label{display:flex;flex-direction:column;gap:4px;font-size:.74rem;color:var(--ink-2);font-weight:500;min-width:0}
+.form label.wide{grid-column:1/-1}
+.form label.chk{flex-direction:row;align-items:center;gap:8px;padding-top:18px}
+.form input[type=checkbox]{width:16px;height:16px;margin:0;accent-color:var(--ember)}
+input[type=text],input[type=number],select,textarea{background:var(--panel-2);border:1px solid var(--line-2);border-radius:7px;padding:7px 10px;color:var(--ink);width:100%;min-width:0}
+input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-visible{outline:2px solid var(--ember);outline-offset:1px}
+textarea{min-height:70px;resize:vertical;font-size:.82rem}
+.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.btn{background:var(--panel-2);border:1px solid var(--line-2);border-radius:8px;padding:7px 14px;cursor:pointer;font-weight:500;font-size:.85rem;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn:hover{border-color:var(--ember);color:var(--ember-ink)}
+.btn.primary{background:var(--ember);border-color:var(--ember);color:#fff}
+.btn.primary:hover{filter:brightness(1.08);color:#fff}
+.btn.danger{border-color:var(--bad);color:var(--bad)}
+.btn.danger:hover{background:var(--bad-soft)}
+.btn.sm{padding:3px 9px;font-size:.76rem;border-radius:6px}
+.btn:disabled{opacity:.5;cursor:default}
+.hint{font-size:.76rem;color:var(--ink-3);margin-top:8px}
+
+/* ---- tables ---- */
+table{border-collapse:collapse;width:100%;font-size:.84rem}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-3);font-weight:600;white-space:nowrap}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+td.mono{font-size:.78rem}
+tr.click{cursor:pointer}tr.click:hover td{background:var(--panel-2)}
+.scroll{overflow-x:auto}
+.state{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:.7rem;font-weight:500;padding:1px 8px;border-radius:999px;border:1px solid;color:var(--terminated);border-color:var(--terminated)}
+.state.PENDING{color:var(--pending);border-color:var(--pending)}.state.RUNNING{color:var(--running);border-color:var(--running)}
+.state.SUSPENDING{color:var(--suspending);border-color:var(--suspending)}.state.SUSPENDED{color:var(--suspended);border-color:var(--suspended)}
+.state.TERMINATING{color:var(--terminating);border-color:var(--terminating)}.state.TERMINATED{color:var(--terminated);border-color:var(--terminated)}
+.state.ACTIVE,.state.SUCCESSFUL,.state.CREATED,.state.UPDATED{color:var(--ok);border-color:var(--ok)}
+.state.FAILED,.state.CREATION_FAILED,.state.UPDATE_FAILED{color:var(--bad);border-color:var(--bad)}
+.state.IN_PROGRESS,.state.CREATING,.state.UPDATING{color:var(--warn);border-color:var(--warn)}
+.status{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:.76rem;padding:2px 9px;border-radius:6px;font-weight:600}
+.status.s2{background:var(--ok-soft);color:var(--ok)}.status.s4{background:var(--warn-soft);color:var(--warn)}.status.s5{background:var(--bad-soft);color:var(--bad)}
+.status.s0{background:var(--panel-3);color:var(--ink-2)}
+.copy{cursor:pointer;color:var(--ink-3);border-bottom:1px dotted var(--ink-3)}.copy:hover{color:var(--ember)}
+
+/* ---- jobs ---- */
+.job{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);margin-top:12px;overflow:hidden}
+.job .jh{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--panel-2);cursor:pointer;flex-wrap:wrap}
+.job .jh .kind{font-family:"IBM Plex Mono",monospace;font-weight:500}
+.job .jh .st{font-size:.72rem;padding:2px 8px;border-radius:999px;border:1px solid}
+.job .jh .st.running{color:var(--warn);border-color:var(--warn)}.job .jh .st.done{color:var(--ok);border-color:var(--ok)}.job .jh .st.failed{color:var(--bad);border-color:var(--bad)}
+.job .jh .st.running::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--warn);margin-right:6px;animation:blink 1s infinite}
+@keyframes blink{50%{opacity:.2}}
+.job .jh .meta{margin-left:auto;font-size:.74rem;color:var(--ink-3);font-family:"IBM Plex Mono",monospace}
+.job .jb{padding:10px 14px;display:none}
+.job.open .jb{display:block}
+.log{font-family:"IBM Plex Mono",monospace;font-size:.76rem;line-height:1.55;max-height:320px;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.log .ln{display:flex;gap:10px;align-items:flex-start}
+.log .t{color:var(--ink-3);flex:none;width:72px}
+.log .lv{flex:none;width:8px;height:8px;border-radius:50%;margin-top:6px;background:var(--ink-3)}
+.log .lv.ok{background:var(--ok)}.log .lv.warn{background:var(--warn)}.log .lv.error{background:var(--bad)}
+.log details{margin-left:82px}.log summary{cursor:pointer;color:var(--plane);font-size:.72rem}
+.log pre{margin:4px 0 6px;white-space:pre-wrap;word-break:break-word;color:var(--ink-2)}
+pre.json{margin:0;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:.76rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:360px;overflow:auto;color:var(--ink-2)}
+pre.json .k{color:var(--plane)}pre.json .s{color:var(--ok)}pre.json .n{color:var(--ember)}pre.json .b{color:var(--warn)}
+.result{margin-top:10px}
+
+/* ---- job inside the VM (inline panel under a fleet row) ---- */
+tr.jobrow td{background:var(--panel-2);padding:12px 14px;border-bottom:1px solid var(--line-2)}
+.jp .jph{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.jp .jph .spacer{flex:1}
+.jp .jph input[type=number]{width:74px;padding:2px 6px;font-size:.76rem}
+.jp .chips{margin-bottom:8px}
+.chip.ok{border-color:var(--ok);color:var(--ok)}.chip.bad{border-color:var(--bad);color:var(--bad)}
+.bar{height:6px;background:var(--panel-3);border-radius:999px;overflow:hidden;border:1px solid var(--line)}
+.bar i{display:block;height:100%;background:var(--ember);transition:width .4s}
+.bar.indet i{width:28%;animation:slide 1.4s ease-in-out infinite}
+@keyframes slide{0%{margin-left:0}50%{margin-left:72%}100%{margin-left:0}}
+.bar.done i{background:var(--ok)}
+.drawer{position:fixed;top:56px;right:0;bottom:0;width:min(560px,100%);background:var(--panel);border-left:1px solid var(--line);transform:translateX(100%);transition:transform .2s;z-index:20;display:flex;flex-direction:column;box-shadow:var(--shadow)}
+.drawer.open{transform:none}
+.drawer .dh{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)}
+.drawer .db{overflow-y:auto;padding:4px 16px 20px;flex:1}
+.badge{display:inline-grid;place-items:center;min-width:18px;height:18px;border-radius:999px;background:var(--ember);color:#fff;font-size:.68rem;font-weight:600;padding:0 5px}
+.badge:empty{display:none}
+
+/* ---- misc ---- */
+.toasts{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:40}
+.toast{background:var(--panel-3);border:1px solid var(--line-2);border-radius:8px;padding:8px 14px;font-size:.84rem;box-shadow:var(--shadow)}
+.toast.bad{border-color:var(--bad);color:var(--bad)}.toast.ok{border-color:var(--ok)}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;place-items:center;z-index:50;padding:20px}
+.modal.open{display:grid}
+.modal .box{background:var(--panel);border:1px solid var(--line-2);border-radius:12px;padding:18px 20px;max-width:760px;width:100%;max-height:85vh;overflow:auto}
+.modal .box h3{margin-bottom:8px}
+.spark{display:block;width:100%;height:auto}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;font-size:.82rem}
+.kv dt{color:var(--ink-3);font-family:"IBM Plex Mono",monospace;font-size:.74rem;padding-top:2px}.kv dd{margin:0;word-break:break-all}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:10px 0}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:6px 10px;color:var(--ink-2);cursor:pointer;font-size:.8rem}
+.tabs button.active{color:var(--ember-ink);border-bottom-color:var(--ember)}
+.empty{color:var(--ink-3);font-size:.84rem;padding:12px 0}
+.dry-banner{display:none;background:var(--warn-soft);border:1px solid var(--warn);color:var(--warn);padding:8px 14px;border-radius:8px;margin-bottom:16px;font-size:.84rem}
+body.dry .dry-banner{display:block}
+@media (max-width:820px){
+  .app{grid-template-columns:minmax(0,1fr);grid-template-rows:56px auto minmax(0,1fr)}
+  nav.side{border-right:0;border-bottom:1px solid var(--line);padding:8px;display:flex;gap:4px;overflow-x:auto}
+  nav.side .grp{display:none}nav.side button{width:auto;white-space:nowrap}nav.side button .k{display:none}
+  main{padding:16px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand"><i></i>microvm-ctl playground</div>
+    <div class="chips" id="chips"></div>
+    <div class="spacer"></div>
+    <label class="switch" title="Dry run: mutating actions print the exact request instead of sending it"><input type="checkbox" id="dryToggle"> dry run</label>
+    <button class="btn" id="jobsBtn">jobs <span class="badge" id="jobsBadge"></span></button>
+  </header>
+  <nav class="side" id="nav">
+    <div class="grp">Control plane</div>
+    <button data-view="overview" class="active">Overview<span class="k">1</span></button>
+    <button data-view="images">Images<span class="k">2</span></button>
+    <button data-view="fleet">Fleet<span class="k">3</span></button>
+    <div class="grp">Execution plane</div>
+    <button data-view="call">Call a VM<span class="k">4</span></button>
+    <button data-view="logs">Logs<span class="k">5</span></button>
+    <div class="grp">Measure</div>
+    <button data-view="probe">Probe<span class="k">6</span></button>
+    <button data-view="cost">Cost<span class="k">7</span></button>
+    <button data-view="trace">API trace<span class="k">8</span></button>
+    <div class="grp">Account</div>
+    <button data-view="settings">Settings<span class="k">9</span></button>
+  </nav>
+  <main>
+    <div class="dry-banner">Dry run is on. Every mutating action (bootstrap, build, run, lease, suspend, resume, terminate, scale, drain, probe, call) records the exact request it would send in the API trace and sends nothing. Reads still hit AWS.</div>
+
+    <!-- ================= overview ================= -->
+    <section class="view active" id="view-overview">
+      <div class="view-head"><div><h2>Overview</h2><p>What this account can do right now: the applied quotas, the fleet by state, and the last few things the playground did.</p></div>
+        <div class="actions" style="margin:0"><button class="btn" onclick="loadOverview()">Refresh</button></div></div>
+      <div class="grid g2">
+        <div class="card"><h3>Applied quotas <span class="right" id="quotaNote"></span></h3><div class="scroll"><table id="quotaTable"><thead><tr><th>quota</th><th class="num">published</th><th class="num">applied</th><th class="num">plane throttles at</th></tr></thead><tbody></tbody></table></div></div>
+        <div class="card"><h3>Fleet <span class="right" id="fleetNote"></span></h3><div class="tiles" id="fleetTiles"></div><div class="hint">Counts every microVM in the region. RUNNING and SUSPENDED both hold memory quota.</div></div>
+        <div class="card"><h3>Configuration</h3><dl class="kv" id="cfgList"></dl><div class="actions"><button class="btn sm" onclick="show('settings')">Edit</button></div></div>
+        <div class="card"><h3>Recent API calls <span class="right"><a href="#" onclick="show('trace');return false">open trace</a></span></h3><div class="scroll"><table id="recentTrace"><thead><tr><th>op</th><th>status</th><th class="num">ms</th></tr></thead><tbody></tbody></table></div></div>
+      </div>
+      <div class="card" style="margin-top:16px"><h3>Recent jobs</h3><div id="jobs-overview"></div></div>
+    </section>
+
+    <!-- ================= images ================= -->
+    <section class="view" id="view-images">
+      <div class="view-head"><div><h2>Images</h2><p>An image is a snapshot: your Dockerfile built on the managed AL2023 base, warmed until <code>/ready</code> says 200, then frozen. Every RunMicrovm clones it.</p></div>
+        <div class="actions" style="margin:0"><button class="btn" onclick="loadImages()">Refresh</button></div></div>
+      <div class="grid g2">
+        <div class="card"><h3>Build an image</h3>
+          <div class="form">
+            <label class="wide">image name<input type="text" id="b_name" placeholder="my-sandbox"></label>
+            <label class="wide">app directory (Dockerfile at its root)<input type="text" id="b_dir" list="exampleDirs" placeholder="/path/to/app" class="mono"><datalist id="exampleDirs"></datalist></label>
+            <label>baseline memory<select id="b_mem"><option value="512">0.5 GB · 0.25 vCPU</option><option value="1024">1 GB · 0.5 vCPU</option><option value="2048" selected>2 GB · 1 vCPU</option><option value="4096">4 GB · 2 vCPU</option><option value="8192">8 GB · 4 vCPU</option></select></label>
+            <label>hooks port<input type="number" id="b_port" value="8080"></label>
+            <label class="chk"><input type="checkbox" id="b_caps"> additionalOsCapabilities: ALL</label>
+            <label class="wide">environment (KEY=value per line, shared by every clone; never secrets)<textarea id="b_env" placeholder="MODEL_ID=amazon.nova-lite-v1:0"></textarea></label>
+            <label class="wide">description<input type="text" id="b_desc"></label>
+          </div>
+          <div class="actions"><button class="btn primary" onclick="buildImage()">Build</button><span class="hint" style="margin:0">Expect ~2 minutes. Progress streams below; build logs land in CloudWatch.</span></div>
+          <div id="jobs-build"></div>
+        </div>
+        <div class="card"><h3>Images in <span id="imgRegion"></span></h3><div class="scroll"><table id="imgTable"><thead><tr><th>name</th><th>state</th><th>active version</th><th>created</th><th></th></tr></thead><tbody></tbody></table></div><div id="imgVersions"></div></div>
+      </div>
+    </section>
+
+    <!-- ================= fleet ================= -->
+    <section class="view" id="view-fleet">
+      <div class="view-head"><div><h2>Fleet</h2><p>Every microVM in the region, live. Launch, converge a fleet to N, park it, drain it. Every mutating call goes through the token bucket at 80% of the applied quota.</p></div>
+        <div class="actions" style="margin:0"><label class="switch"><input type="checkbox" id="fleetAuto"> auto-refresh 3 s</label><button class="btn" onclick="loadFleet()">Refresh</button></div></div>
+      <div class="card">
+        <h3>microVMs <span class="right"><label>image <select id="f_filter" onchange="loadFleet()"><option value="">all images</option></select></label> &nbsp; <label><input type="checkbox" id="f_all" onchange="loadFleet()"> include TERMINATED</label></span></h3>
+        <div id="fleetCounts" class="chips" style="margin-bottom:10px"></div>
+        <div class="scroll"><table id="fleetTable"><thead><tr><th>microvm id</th><th>state</th><th>image</th><th>ver</th><th>age</th><th>endpoint</th><th></th></tr></thead><tbody></tbody></table></div>
+        <div class="empty" id="fleetEmpty" hidden>No microVMs. Launch one below.</div>
+      </div>
+      <div class="grid g2" style="margin-top:16px">
+        <div class="card"><h3>Run microVMs</h3>
+          <div class="form">
+            <label class="wide">image<select id="r_image"></select></label>
+            <label>version<input type="text" id="r_version" placeholder="latest ACTIVE"></label>
+            <label>count<input type="number" id="r_count" value="1" min="1"></label>
+            <label>idle → suspend (s)<input type="number" id="r_idle" value="300"></label>
+            <label>suspended → terminate (s)<input type="number" id="r_susp" value="3600"></label>
+            <label>max duration (s, ≤ 28800)<input type="number" id="r_max" placeholder="none"></label>
+            <label class="chk"><input type="checkbox" id="r_auto" checked> auto-resume on traffic</label>
+            <label class="wide">runHookPayload (per-VM context delivered to /run)<input type="text" id="r_payload" class="mono" placeholder='{"tenant_id": "acme"}'></label>
+            <label class="wide">execution role override<input type="text" id="r_role" class="mono" placeholder="MVM_EXECUTION_ROLE_ARN"></label>
+            <label class="chk"><input type="checkbox" id="r_wait" checked> wait until RUNNING</label>
+            <label class="chk"><input type="checkbox" id="r_probe" checked> then poll /healthz</label>
+          </div>
+          <div class="actions"><button class="btn primary" onclick="runVms()">Run</button></div>
+          <div id="jobs-run"></div>
+        </div>
+        <div class="card"><h3>Scale a fleet</h3>
+          <div class="form">
+            <label class="wide">image<select id="s_image"></select></label>
+            <label>desired size<input type="number" id="s_n" value="3" min="0"></label>
+            <label>idle → suspend (s)<input type="number" id="s_idle" value="300"></label>
+            <label>suspended → terminate (s)<input type="number" id="s_susp" value="3600"></label>
+            <label>max duration (s)<input type="number" id="s_max" placeholder="none"></label>
+            <label class="wide">payload template ({i} = launch index)<input type="text" id="s_tmpl" class="mono" placeholder='{"shard": {i}}'></label>
+            <label class="chk"><input type="checkbox" id="s_wait"> wait for RUNNING</label>
+          </div>
+          <div class="actions">
+            <button class="btn primary" onclick="scaleFleet()">scale_to</button>
+            <button class="btn" onclick="fleetVerb('suspend_all')">suspend all</button>
+            <button class="btn" onclick="fleetVerb('resume_all')">resume all</button>
+            <button class="btn" onclick="fleetVerb('reap')">reap &gt; <input type="number" id="s_age" value="7200" style="width:80px;padding:2px 6px"> s</button>
+            <button class="btn danger" onclick="fleetVerb('drain')">drain</button>
+          </div>
+          <div class="hint">Scale-down terminates SUSPENDED members first (they still hold memory quota), then the youngest RUNNING. The job log shows the victims before anything is sent.</div>
+          <div id="jobs-fleet"></div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:16px"><h3>Lease a VM one task <span class="right">RunMicrovm with a <code>lease</code> in runHookPayload; the VM heartbeats and completes it itself</span></h3>
+        <div class="form">
+          <label>image<select id="e_image"></select></label>
+          <label>kind (orchestrator)<select id="e_kind"><option value="none" selected>none · no orchestrator</option><option value="sfn">sfn · Step Functions task token</option><option value="durable">durable · Lambda durable function</option><option value="http">http · callback URL</option><option value="sqs">sqs · queue URL</option><option value="eventbridge">eventbridge · bus name</option></select></label>
+          <label>lease id<input type="text" id="e_id" placeholder="optional, echoed in every callback"></label>
+          <label class="wide">token (task token, callback id; not needed for kind none)<input type="text" id="e_token" class="mono"></label>
+          <label class="wide">target (URL, queue URL or bus name; http / sqs / eventbridge only)<input type="text" id="e_target" class="mono"></label>
+          <label class="wide">task (JSON object, delivered to the <code>@app.on_lease</code> handler)<textarea id="e_task" class="mono">{"steps":["echo hi","sleep 2","echo done"]}</textarea></label>
+          <label>budget (s)<input type="number" id="e_budget" value="900" min="1"></label>
+          <label>heartbeat timeout (s)<input type="number" id="e_hbt" value="120" min="1"></label>
+          <label>slack (s)<input type="number" id="e_slack" value="120" min="0"></label>
+          <label>heartbeat every (s)<input type="number" id="e_hb" value="30" min="1"></label>
+          <label class="wide">execution role override<input type="text" id="e_role" class="mono" placeholder="MVM_EXECUTION_ROLE_ARN"></label>
+          <label class="chk"><input type="checkbox" id="e_wait" checked> wait for RUNNING, then follow /status until the lease is done (300 s max)</label>
+        </div>
+        <div class="actions"><button class="btn primary" onclick="leaseVm()">Lease</button></div>
+        <div class="hint">clientToken = sha256(kind:token), so a replayed launch returns the same VM. The policy becomes the VM's idle policy (max idle = budget, no auto-resume) and its duration cap (budget + slack). The job log shows the encoded payload and the exact RunMicrovm request before anything is sent.</div>
+        <div id="jobs-lease"></div>
+      </div>
+    </section>
+
+    <!-- ================= call ================= -->
+    <section class="view" id="view-call">
+      <div class="view-head"><div><h2>Call a VM</h2><p>An authenticated request through the execution plane: a port-scoped JWE token in <code>X-aws-proxy-auth</code>, 429 backoff, a patient 502 retry while a suspended VM auto-resumes, and a one-time re-mint on 403.</p></div></div>
+      <div class="grid g2">
+        <div class="card"><h3>Request</h3>
+          <div class="form">
+            <label class="wide">microVM<select id="c_id"></select></label>
+            <label>method<select id="c_method"><option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option></select></label>
+            <label class="wide" style="grid-column:span 2">path<input type="text" id="c_path" class="mono" value="/healthz"></label>
+            <label>port<input type="number" id="c_port" placeholder="8080"></label>
+            <label>token TTL (min)<input type="number" id="c_ttl" value="15" min="1" max="60"></label>
+            <label>resume patience (s)<input type="number" id="c_patience" value="30"></label>
+            <label>max attempts<input type="number" id="c_attempts" value="6"></label>
+            <label>timeout (s)<input type="number" id="c_timeout" value="60"></label>
+            <label class="wide">body (JSON, sent as application/json)<textarea id="c_body" class="mono" placeholder='{"code": "print(2+2)"}'></textarea></label>
+          </div>
+          <div class="actions"><button class="btn primary" onclick="callVm()" id="c_send">Send</button><button class="btn" onclick="mintToken()">Mint a token only</button></div>
+          <div class="hint">Quick paths: <a href="#" onclick="setPath('GET','/healthz');return false">GET /healthz</a> · <a href="#" onclick="setPath('POST','/execute','{&quot;code&quot;: &quot;print(41+1)&quot;}');return false">POST /execute</a> · <a href="#" onclick="setPath('GET','/state');return false">GET /state</a></div>
+          <div id="tokenOut"></div>
+        </div>
+        <div class="card"><h3>Response</h3><div id="callOut" class="empty">Nothing sent yet.</div>
+          <h3 style="margin-top:16px">History</h3><div class="scroll"><table id="callHist"><thead><tr><th>time</th><th>request</th><th>status</th><th class="num">ms</th></tr></thead><tbody></tbody></table></div></div>
+      </div>
+    </section>
+
+    <!-- ================= logs ================= -->
+    <section class="view" id="view-logs">
+      <div class="view-head"><div><h2>Logs</h2><p>CloudWatch tail of <code>/aws/lambda/microvms/&lt;image&gt;</code>. Build output and runtime stdout land here, one stream per VM.</p></div></div>
+      <div class="card">
+        <div class="form"><label>image<select id="l_image"></select></label><label>minutes<input type="number" id="l_min" value="15"></label><label>limit<input type="number" id="l_limit" value="200"></label><label class="chk"><input type="checkbox" id="l_auto"> auto-refresh 5 s</label></div>
+        <div class="actions"><button class="btn primary" onclick="loadLogs()">Tail</button><span class="muted small" id="logMeta"></span></div>
+        <div class="log" id="logOut" style="max-height:60vh;margin-top:12px"></div>
+      </div>
+    </section>
+
+    <!-- ================= probe ================= -->
+    <section class="view" id="view-probe">
+      <div class="view-head"><div><h2>Probe</h2><p>A parameterised version of the benchmark harness. It launches real VMs, times every stage, checks that state survives suspend and resume, and cleans up after itself. It costs a few cents.</p></div></div>
+      <div class="grid g2">
+        <div class="card"><h3>Plan</h3>
+          <div class="form">
+            <label class="wide">image<select id="p_image"></select></label>
+            <label>launches<input type="number" id="p_launches" value="2" min="1"></label>
+            <label>warm calls<input type="number" id="p_warm" value="10" min="0"></label>
+            <label>warm method<select id="p_method"><option>GET</option><option>POST</option></select></label>
+            <label>warm path<input type="text" id="p_path" class="mono" value="/healthz"></label>
+            <label class="wide">warm body (JSON, POST only)<input type="text" id="p_body" class="mono" placeholder='{"code": "print(sum(range(1000)))"}'></label>
+            <label>health path<input type="text" id="p_health" class="mono" value="/healthz"></label>
+            <label>idle → suspend (s)<input type="number" id="p_idle" value="1800"></label>
+            <label class="chk"><input type="checkbox" id="p_sr" checked> explicit suspend / resume</label>
+            <label class="chk"><input type="checkbox" id="p_auto" checked> auto-resume on traffic</label>
+            <label class="chk"><input type="checkbox" id="p_term" checked> terminate the probe after</label>
+          </div>
+          <div class="actions"><button class="btn primary" onclick="runProbe()">Run probe</button></div>
+          <div class="hint">Launches run one at a time and each extra VM is terminated as soon as it is measured, so the probe fits an 8 GB memory quota with a 2 GB image.</div>
+        </div>
+        <div class="card"><h3>Results</h3><div id="jobs-probe"><div class="empty">No probe run yet.</div></div></div>
+      </div>
+    </section>
+
+    <!-- ================= cost ================= -->
+    <section class="view" id="view-cost">
+      <div class="view-head"><div><h2>Cost</h2><p>The <code>CostModel</code> arithmetic, computed server-side from the published us-east-1 rates, plus what the current fleet costs per hour if nothing changes.</p></div></div>
+      <div class="grid g2">
+        <div class="card"><h3>Price a session shape</h3>
+          <div class="form">
+            <label>memory (GB)<input type="number" id="k_mem" value="2" step="0.5" min="0.5"></label>
+            <label>snapshot (GB)<input type="number" id="k_snap" value="0.61" step="0.01" min="0"></label>
+            <label>active (min)<input type="number" id="k_act" value="30" min="0"></label>
+            <label>suspended (min)<input type="number" id="k_sus" value="480" min="0"></label>
+            <label>cycles<input type="number" id="k_cyc" value="1" min="0"></label>
+          </div>
+          <div class="tiles" id="costTiles" style="margin-top:12px"></div>
+          <div class="hint" id="rates"></div>
+        </div>
+        <div class="card"><h3>Fleet cost per hour, as it stands</h3>
+          <div class="form"><label>image<select id="k_image"><option value="">all images</option></select></label><label>memory per VM (GB)<input type="number" id="k_fmem" value="2" step="0.5"></label></div>
+          <div class="actions"><button class="btn primary" onclick="fleetCost()">Estimate</button></div>
+          <div class="tiles" id="fleetCostTiles" style="margin-top:12px"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= trace ================= -->
+    <section class="view" id="view-trace">
+      <div class="view-head"><div><h2>API trace</h2><p>Every AWS API call this process makes, captured from botocore's event hooks: operation, HTTP status, duration, and the redacted request and response. Dry-run entries are the requests that were not sent.</p></div>
+        <div class="actions" style="margin:0"><input type="text" id="t_filter" placeholder="filter: op or service" style="width:220px"><label class="switch"><input type="checkbox" id="t_auto" checked> live</label><button class="btn" onclick="clearTrace()">Clear</button></div></div>
+      <div class="card"><div class="scroll"><table id="traceTable"><thead><tr><th>time</th><th>service</th><th>operation</th><th>status</th><th class="num">ms</th><th>detail</th></tr></thead><tbody></tbody></table></div><div class="empty" id="traceEmpty">No calls yet.</div></div>
+    </section>
+
+    <!-- ================= settings ================= -->
+    <section class="view" id="view-settings">
+      <div class="view-head"><div><h2>Settings</h2><p>The <code>PlaneConfig</code> for this session. Values start from the <code>MVM_*</code> environment variables; changes here apply to this process only.</p></div></div>
+      <div class="grid g2">
+        <div class="card" style="grid-column:1/-1"><h3>Credentials <span class="right">held in this process only; never written to disk</span></h3>
+          <div class="grid g2">
+            <div>
+              <div class="form"><label>use a profile from ~/.aws<select id="cr_profile"><option value="">choose…</option></select></label></div>
+              <div class="actions"><button class="btn primary" onclick="applyProfile()">Use profile</button><span class="hint" style="margin:0">SSO profiles need <code>aws sso login --profile NAME</code> in your terminal first.</span></div>
+            </div>
+            <div>
+              <div class="form"><label class="wide">or paste export lines (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, and any MVM_* exports)<textarea id="cr_text" class="mono" rows="5" placeholder="export AWS_ACCESS_KEY_ID=ASIA...&#10;export AWS_SECRET_ACCESS_KEY=...&#10;export AWS_SESSION_TOKEN=...&#10;export MVM_ARTIFACT_BUCKET=..."></textarea></label></div>
+              <div class="actions"><button class="btn primary" onclick="applyPasted()">Apply pasted credentials</button><button class="btn" onclick="clearCreds()">Clear static keys</button><label class="switch"><input type="checkbox" id="cr_live"> turn dry run off after verifying</label></div>
+            </div>
+          </div>
+          <div id="credOut" class="hint"></div>
+        </div>
+      <div class="card"><h3>Plane configuration</h3>
+          <div class="form">
+            <label>region<select id="cfg_region"></select></label>
+            <label>AWS profile<input type="text" id="cfg_profile" placeholder="AWS_PROFILE"></label>
+            <label class="wide">artifact bucket<input type="text" id="cfg_bucket" class="mono"></label>
+            <label class="wide">build role ARN<input type="text" id="cfg_build" class="mono"></label>
+            <label class="wide">execution role ARN<input type="text" id="cfg_exec" class="mono"></label>
+          </div>
+          <div class="actions"><button class="btn primary" onclick="saveConfig()">Apply</button><span class="muted small">Account: <span id="cfg_account" class="mono"></span></span></div>
+          <div class="hint">Base image: <span id="cfg_base" class="mono"></span></div>
+        </div>
+        <div class="card"><h3>Bootstrap the account</h3>
+          <p class="small muted">Creates, idempotently, the artifact bucket (public access blocked) and two IAM roles: a build role that can read the bucket and write build logs, and an execution role for the running VM. Safe to re-run.</p>
+          <div class="form"><label>name prefix<input type="text" id="bs_prefix" value="microvm-ctl"></label></div>
+          <div class="actions"><button class="btn primary" onclick="bootstrap()">Bootstrap</button></div>
+          <div id="jobs-bootstrap"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<aside class="drawer" id="drawer"><div class="dh"><h3 style="margin:0">Jobs</h3><span class="muted small" id="drawerMeta"></span><button class="btn sm" style="margin-left:auto" onclick="toggleDrawer(false)">close</button></div><div class="db" id="jobs-all"></div></aside>
+<div class="toasts" id="toasts"></div>
+<div class="modal" id="modal"><div class="box"><h3 id="modalTitle"></h3><div id="modalBody"></div><div class="actions" id="modalActions"></div></div></div>
+
+<script>
+// ------------------------------------------------------------ helpers
+const $ = (s, el=document) => el.querySelector(s);
+const $$ = (s, el=document) => Array.from(el.querySelectorAll(s));
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const state = { cfg:null, images:[], vms:[], jobs:[], traceSeq:0, trace:[], callHist:[], openJobs:new Set(), closedJobs:new Set(), view:'overview' };
+
+async function api(method, path, body){
+  const r = await fetch(path, { method, headers: body ? {'Content-Type':'application/json'} : {}, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({error:'bad json'}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function toast(msg, cls=''){ const t=document.createElement('div'); t.className='toast '+cls; t.textContent=msg; $('#toasts').appendChild(t); setTimeout(()=>t.remove(), 4200); }
+function fail(e){ console.error(e); toast(e.message || String(e), 'bad'); }
+function fmtT(t){ const d=new Date(t*1000); return d.toTimeString().slice(0,8); }
+function age(epoch){ if(!epoch) return '–'; const s=Math.max(0,Date.now()/1000-epoch); if(s<90) return Math.round(s)+' s'; if(s<5400) return Math.round(s/60)+' min'; return (s/3600).toFixed(1)+' h'; }
+function money(v,d=4){ return '$'+Number(v).toFixed(d); }
+function sampleChip(flag){ return flag ? ' <span class="chip warn" title="AWS did not answer; this is the dry-run sample dataset">sample data</span>' : ''; }
+function prefillDefaults(exampleDirs){
+  // Dry run without credentials: fill every form with a working example so each view can be exercised.
+  const set = (sel, v) => { const el = $(sel); if (el && !el.value) el.value = v; };
+  const dir = (exampleDirs||[]).find(d => d.endsWith('code-sandbox')) || (exampleDirs||[])[0] || '/path/to/app';
+  set('#b_name','code-sandbox'); set('#b_dir', dir); set('#b_desc','python sandbox with numpy, warmed at /ready');
+  if (!$('#b_env').value) $('#b_env').value = 'SANDBOX_TIMEOUT=30';
+  set('#r_payload','{"tenant_id": "acme"}'); set('#r_max','3600'); set('#s_tmpl','{"shard": {i}}'); set('#s_max','3600');
+  set('#c_path','/execute'); $('#c_method').value='POST'; if (!$('#c_body').value) $('#c_body').value='{"code": "print(41+1)"}';
+  set('#p_body','{"code": "print(sum(range(1000)))"}'); $('#p_method').value='POST'; set('#p_path','/execute');
+  set('#e_id','demo-lease-1'); if (!$('#e_task').value.trim()) $('#e_task').value = '{"steps":["echo hi","sleep 2","echo done"]}';
+}
+function fmtDur(s){ s = Number(s)||0; if (s < 90) return s.toFixed(s<10?1:0)+' s'; if (s < 5400) return Math.floor(s/60)+' min '+Math.round(s%60)+' s'; return (s/3600).toFixed(1)+' h'; }
+function pill(s){ return `<span class="state ${esc(s)}">${esc(s)}</span>`; }
+function statusBadge(code){ const c = code ? 's'+String(code)[0] : 's0'; return `<span class="status ${c}">${code ?? 'ERR'}</span>`; }
+function hlJson(obj){
+  const s = JSON.stringify(obj, null, 2) ?? 'null';
+  return esc(s).replace(/("(?:[^"\\]|\\.)*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)/g, (m,str,colon,b,n)=>{
+    if (str) return colon ? `<span class="k">${str}</span>${colon}` : `<span class="s">${str}</span>`;
+    if (b) return `<span class="b">${b}</span>`; if (n) return `<span class="n">${n}</span>`; return m; });
+}
+function jsonBlock(obj){ return `<pre class="json">${hlJson(obj)}</pre>`; }
+function copy(text){ navigator.clipboard?.writeText(text).then(()=>toast('copied','ok')); }
+function modal(title, html, actions=[]){
+  $('#modalTitle').textContent = title; $('#modalBody').innerHTML = html;
+  const a = $('#modalActions'); a.innerHTML=''; 
+  actions.forEach(([label, cls, fn]) => { const b=document.createElement('button'); b.className='btn '+cls; b.textContent=label; b.onclick=()=>{ closeModal(); fn && fn(); }; a.appendChild(b); });
+  if (!actions.length){ const b=document.createElement('button'); b.className='btn'; b.textContent='close'; b.onclick=closeModal; a.appendChild(b); }
+  $('#modal').classList.add('open');
+}
+function closeModal(){ $('#modal').classList.remove('open'); }
+function confirmAction(title, html){ return new Promise(res => modal(title, html, [['cancel','',()=>res(false)],['confirm','danger',()=>res(true)]])); }
+$('#modal').addEventListener('click', e => { if (e.target.id==='modal') closeModal(); });
+
+// ------------------------------------------------------------ navigation
+function show(view){
+  state.view = view; if (location.hash !== '#'+view) history.replaceState(null, '', '#'+view);
+  $$('.view').forEach(v => v.classList.toggle('active', v.id === 'view-'+view));
+  $$('#nav button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+  ({overview: loadOverview, images: loadImages, fleet: loadFleet, call: prepCall, logs: prepLogs, probe: prepProbe, cost: prepCost, trace: loadTrace, settings: prepSettings})[view]?.();
+}
+$$('#nav button').forEach(b => b.onclick = () => show(b.dataset.view));
+document.addEventListener('keydown', e => { if (e.target.matches('input,textarea,select')) return; const v=$$('#nav button')[Number(e.key)-1]; if (v && e.key>='1' && e.key<='9') show(v.dataset.view); });
+function toggleDrawer(open){ $('#drawer').classList.toggle('open', open ?? !$('#drawer').classList.contains('open')); }
+$('#jobsBtn').onclick = () => toggleDrawer();
+
+// ------------------------------------------------------------ config
+async function loadConfig(){
+  state.cfg = await api('GET','/api/config');
+  const c = state.cfg;
+  document.body.classList.toggle('dry', c.dry_run); $('#dryToggle').checked = c.dry_run;
+  $('#chips').innerHTML = `<span class="chip">region <b>${esc(c.region)}</b></span><span class="chip">profile <b>${esc(c.profile||'default')}</b></span><span class="chip ${(String(c.account).startsWith('unavailable')||c.sample)?'warn':''}" style="cursor:pointer" title="set credentials" onclick="show('settings')">account <b>${esc(c.account)}</b></span><span class="chip">v${esc(c.version)}</span>`;
+  if (c.dry_run && !state.prefilled) { state.prefilled = true; api('GET','/api/examples').then(ex => prefillDefaults(ex.dirs)).catch(() => prefillDefaults([])); }
+  $('#cfgList').innerHTML = ['region','profile','artifact_bucket','build_role_arn','execution_role_arn'].map(k => `<dt>${k}</dt><dd>${c[k] ? esc(c[k]) : '<span class="muted">not set</span>'}</dd>`).join('');
+  $('#rates').innerHTML = `Rates: vCPU $${c.rates.vcpu_second}/s · memory $${c.rates.gb_second}/GB-s · snapshot write $${c.rates.snapshot_write_gb}/GB · read $${c.rates.snapshot_read_gb}/GB · storage $${c.rates.storage_gb_month}/GB-month. vCPU = memory / 2.`;
+}
+$('#dryToggle').onchange = async e => { try { await api('POST','/api/config',{dry_run:e.target.checked}); state.images=[]; state.vms=[]; await loadConfig(); if (state.view!=='overview') show(state.view); else loadOverview(); toast(e.target.checked?'dry run on: nothing will be mutated':'dry run off: actions are live', e.target.checked?'':'ok'); } catch(err){ fail(err); } };
+
+// ------------------------------------------------------------ overview
+async function loadOverview(){
+  loadConfig().catch(fail);
+  api('GET','/api/quotas').then(q => {
+    $('#quotaTable tbody').innerHTML = q.rows.map(r => `<tr><td>${esc(r.quota)}</td><td class="num">${r.published}</td><td class="num">${r.applied ?? '<span class="muted">unknown</span>'}</td><td class="num">${r.throttle != null ? r.throttle+'/s' : '–'}</td></tr>`).join('');
+    $('#quotaNote').innerHTML = (q.answered ? `throttling at ${q.headroom*100}% of applied` : 'Service Quotas did not answer; published defaults in use') + sampleChip(q.sample);
+  }).catch(fail);
+  api('GET','/api/vms?all=1').then(v => {
+    const order = ['PENDING','RUNNING','SUSPENDING','SUSPENDED','TERMINATING','TERMINATED'];
+    $('#fleetTiles').innerHTML = order.map(s => `<div><b style="color:var(--${s.toLowerCase()})">${v.by_state[s]||0}</b><small>${s}</small></div>`).join('');
+    $('#fleetNote').innerHTML = `${v.items.length} total` + sampleChip(v.sample);
+  }).catch(e => { $('#fleetTiles').innerHTML = `<div><b>–</b><small>unavailable: ${esc(e.message)}. <a href="#" onclick="show('settings');return false">Set credentials</a>.</small></div>`; });
+  api('GET','/api/trace').then(t => { $('#recentTrace tbody').innerHTML = t.items.slice(-8).reverse().map(e => `<tr><td class="mono">${esc(e.service)}.${esc(e.op)}</td><td>${e.error ? '<span class="status s5">ERR</span>' : statusBadge(e.status ?? (e.service==='dry-run'?'DRY':null))}</td><td class="num">${e.ms}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">none yet</td></tr>'; }).catch(fail);
+}
+
+// ------------------------------------------------------------ images
+async function loadImages(){
+  try {
+    const [imgs, ex] = await Promise.all([api('GET','/api/images'), api('GET','/api/examples')]);
+    state.images = imgs.items;
+    $('#exampleDirs').innerHTML = ex.dirs.map(d => `<option value="${esc(d)}">`).join('');
+    $('#imgRegion').innerHTML = esc(state.cfg?.region||'') + sampleChip(imgs.sample);
+    $('#imgTable tbody').innerHTML = imgs.items.map(i => `<tr><td class="mono">${esc(i.name)}</td><td>${pill(i.state)}</td><td class="mono">${esc(i.latestActiveImageVersion||'–')}</td><td class="muted">${esc(String(i.createdAt).slice(0,19))}</td><td><button class="btn sm" onclick="showVersions('${esc(i.name)}')">versions</button> <button class="btn sm" onclick="quickRun('${esc(i.name)}')">run</button></td></tr>`).join('') || '<tr><td colspan="5" class="muted">no images yet; build one</td></tr>';
+    fillImageSelects();
+  } catch(e){ fail(e); }
+}
+function fillImageSelects(){
+  const opts = state.images.map(i => `<option value="${esc(i.name)}">${esc(i.name)}</option>`).join('');
+  ['#r_image','#s_image','#e_image','#p_image','#l_image'].forEach(s => { const el=$(s); const v=el.value; el.innerHTML = opts; if (v) el.value=v; });
+  ['#f_filter','#k_image'].forEach(s => { const el=$(s); const v=el.value; el.innerHTML = '<option value="">all images</option>'+opts; el.value=v; });
+}
+async function showVersions(name){
+  try { const v = await api('GET',`/api/images/${encodeURIComponent(name)}/versions`);
+    $('#imgVersions').innerHTML = `<h3 style="margin-top:14px">versions of ${esc(name)}</h3><div class="scroll"><table><thead><tr><th>version</th><th>build</th><th>status</th><th>created</th></tr></thead><tbody>${v.items.map(x => `<tr><td class="mono">${esc(x.imageVersion)}</td><td>${pill(x.state)}</td><td>${pill(x.status)}</td><td class="muted">${esc(String(x.createdAt).slice(0,19))}</td></tr>`).join('')}</tbody></table></div>`;
+  } catch(e){ fail(e); }
+}
+function quickRun(name){ show('fleet'); $('#r_image').value = name; }
+async function buildImage(){
+  const env = {}; $('#b_env').value.split('\n').map(l=>l.trim()).filter(Boolean).forEach(l => { const i=l.indexOf('='); if (i>0) env[l.slice(0,i)] = l.slice(i+1); });
+  try { const j = await api('POST','/api/images/build',{ name:$('#b_name').value.trim(), dir:$('#b_dir').value.trim(), memory_mib:Number($('#b_mem').value), hooks_port:Number($('#b_port').value), caps_all:$('#b_caps').checked, environment:Object.keys(env).length?env:null, description:$('#b_desc').value });
+    state.openJobs.add(j.id); toast('build started'); pollJobs(true); } catch(e){ fail(e); }
+}
+
+// ------------------------------------------------------------ fleet
+let fleetTimer = null;
+$('#fleetAuto').onchange = e => { clearInterval(fleetTimer); if (e.target.checked) fleetTimer = setInterval(() => state.view==='fleet' && loadFleet(), 3000); };
+async function loadFleet(){
+  try {
+    if (!state.images.length) { const imgs = await api('GET','/api/images'); state.images = imgs.items; fillImageSelects(); }
+    const v = await api('GET',`/api/vms?image=${encodeURIComponent($('#f_filter').value)}&all=${$('#f_all').checked?1:0}`);
+    state.vms = v.items;
+    $('#fleetCounts').innerHTML = (Object.entries(v.by_state).sort().map(([s,n]) => `<span class="chip">${pill(s)} × ${n}</span>`).join('') || '<span class="muted small">empty</span>') + sampleChip(v.sample);
+    $('#fleetEmpty').hidden = v.items.length > 0;
+    $('#fleetTable tbody').innerHTML = v.items.map(m => `<tr data-id="${esc(m.microvm_id)}">
+      <td class="mono"><span class="copy" onclick="copy('${esc(m.microvm_id)}')" title="copy">${esc(m.microvm_id)}</span></td><td>${pill(m.state)}</td><td class="mono">${esc(m.image)}</td><td class="mono">${esc(m.version)}</td><td>${age(m.started_epoch)}</td>
+      <td class="mono small"><span class="copy" onclick="copy('${esc(m.endpoint||'')}')">${esc((m.endpoint||'').split('.')[0])}…</span></td>
+      <td style="white-space:nowrap">${m.state==='RUNNING'?`<button class="btn sm" onclick="vmVerb('${m.microvm_id}','suspend')">suspend</button> `:''}${m.state==='SUSPENDED'?`<button class="btn sm" onclick="vmVerb('${m.microvm_id}','resume')">resume</button> `:''}${m.state!=='TERMINATED'?`<button class="btn sm danger" onclick="vmVerb('${m.microvm_id}','terminate')">terminate</button> `:''}<button class="btn sm" onclick="quickCall('${m.microvm_id}')">call</button> ${m.state==='RUNNING'?`<button class="btn sm ${follow.id===m.microvm_id?'primary':''}" onclick="jobPanel('${m.microvm_id}')" title="phase, progress and log tail from the hook runtime's /status">job</button> `:''}<button class="btn sm" onclick="vmJson('${m.microvm_id}')">json</button></td></tr>`).join('');
+    fillVmSelect();
+    mountJobPanel();
+  } catch(e){ fail(e); }
+}
+
+// ---- job inside the VM: poll GET /status through /api/vms/<id>/job while the panel is open
+const follow = { id:null, port:'', since:null, snap:null, lines:[], error:null, sample:false, timer:null };
+function jobPanel(id){
+  if (follow.id === id) return stopFollow();
+  stopFollow();
+  Object.assign(follow, { id, since:null, snap:null, lines:[], error:null, sample:false });
+  if (!mountJobPanel()) loadFleet(); // row not on screen yet (filter, or a VM just leased): render, then mount
+  pollJob();
+}
+function stopFollow(){ clearTimeout(follow.timer); follow.timer = null; follow.id = null; $$('tr.jobrow').forEach(r => r.remove()); $$('#fleetTable button.primary').forEach(b => b.classList.remove('primary')); }
+function mountJobPanel(){
+  if (!follow.id) return false;
+  const row = $(`#fleetTable tbody tr[data-id="${follow.id}"]`); if (!row) return false;
+  if (!$('tr.jobrow')) { const tr = document.createElement('tr'); tr.className = 'jobrow'; tr.innerHTML = '<td colspan="7"><div class="jp" id="jobPanel"></div></td>'; row.after(tr); }
+  renderJobPanel();
+  return true;
+}
+async function pollJob(){
+  const id = follow.id; if (!id) return;
+  try {
+    const r = await api('GET', `/api/vms/${id}/job?since=${follow.since ?? ''}&port=${follow.port || ''}`);
+    if (follow.id !== id) return;
+    if (r.error) follow.error = r;
+    else {
+      follow.error = null; follow.sample = !!r.sample;
+      if (follow.snap && r.seq < follow.snap.seq) follow.lines = []; // the runtime restarted its log
+      follow.snap = r; follow.lines.push(...(r.log_tail || [])); follow.lines = follow.lines.slice(-300); follow.since = r.seq;
+    }
+  } catch(e){ if (follow.id !== id) return; follow.error = { error: e.message }; }
+  renderJobPanel();
+  follow.timer = setTimeout(pollJob, follow.error ? 4000 : 2000);
+}
+function jobPort(v){ follow.port = v; follow.since = null; follow.lines = []; follow.snap = null; }
+function renderJobPanel(){
+  const el = $('#jobPanel'); if (!el || !follow.id) return;
+  const s = follow.snap, e = follow.error, lvl = l => ({warning:'warn', warn:'warn', error:'error', ok:'ok'})[l] || 'info';
+  let body;
+  if (!s && !e) body = '<div class="empty">fetching /status…</div>';
+  else if (e && !s) body = `<div class="empty">no telemetry on this VM${e.status ? ` (<span class="mono">${e.status}</span> on /status)` : ''}: <span class="mono small">${esc(e.error)}</span><br><span class="small">/status is served by the hook runtime (<code>microvm.hooks.server.HookApp</code>); images without it, or VMs that are not RUNNING, cannot answer. Retrying every 4 s.</span></div>`;
+  else {
+    const p = s.progress || {}, pct = p.total ? Math.min(100, Math.round(100 * (p.done || 0) / p.total)) : null, L = s.lease;
+    const leaseChip = L ? `<span class="chip ${L.error || L.lost ? 'bad' : L.done ? 'ok' : ''}" title="lease id ${esc(L.id || '–')}">lease <b>${esc(L.kind)}</b> · ${L.heartbeats ?? 0} heartbeats · ${L.done ? (L.error ? 'failed: ' + esc(L.error.error_type || 'error') : 'done') : L.lost ? 'lost' : 'active'}</span>` : '<span class="chip">no lease</span>';
+    body = `<div class="chips">
+        <span class="chip">phase <b>${esc(s.phase)}</b></span><span class="chip">elapsed <b>${fmtDur(s.elapsed_s)}</b></span><span class="chip" title="started (UTC)">started <b>${esc(String(s.started).slice(11, 19))}</b></span>${leaseChip}
+        ${Object.entries(s.counters || {}).map(([k, v]) => `<span class="chip">${esc(k)} <b>${esc(typeof v === 'object' ? JSON.stringify(v) : v)}</b></span>`).join('')}
+        ${e ? `<span class="chip warn" title="${esc(e.error)}">last poll failed</span>` : ''}${sampleChip(follow.sample)}</div>
+      <div class="bar ${pct === null ? 'indet' : ''} ${L && L.done && !L.error ? 'done' : ''}"><i style="width:${pct ?? 28}%"></i></div>
+      <div class="hint" style="margin-top:4px">${pct === null ? `${p.done || 0} done, total unknown` : `${p.done}/${p.total} · ${pct}%`} · seq ${s.seq} · polling every 2 s</div>
+      <div class="log" id="jobTail" style="max-height:240px;margin-top:8px">${follow.lines.map(l => `<div class="ln"><span class="t">${esc(String(l.t).slice(11, 19))}</span><span class="lv ${lvl(l.level)}"></span><span><span class="muted">${esc(l.phase)}</span> ${esc(l.msg)}</span></div>`).join('') || '<div class="muted">no log lines yet</div>'}</div>`;
+  }
+  el.innerHTML = `<div class="jph"><span class="mono small">job inside <b>${esc(follow.id)}</b></span><span class="spacer"></span><label class="small muted">hooks port <input type="number" placeholder="8080" value="${esc(follow.port)}" onchange="jobPort(this.value)"></label><button class="btn sm" onclick="stopFollow()">stop following</button></div>${body}`;
+  const tail = $('#jobTail'); if (tail) tail.scrollTop = tail.scrollHeight;
+}
+function fillVmSelect(){ const el=$('#c_id'); const v=el.value; el.innerHTML = state.vms.filter(m=>m.state!=='TERMINATED').map(m => `<option value="${esc(m.microvm_id)}">${esc(m.microvm_id)} · ${esc(m.state)} · ${esc(m.image)}</option>`).join('') || '<option value="">no active microVMs</option>'; if (v) el.value = v; }
+async function vmVerb(id, verb){
+  if (verb==='terminate' && !state.cfg.dry_run && !(await confirmAction('Terminate microVM', `<p>Terminate <code>${esc(id)}</code>? The <code>/terminate</code> hook runs first; state that is not flushed is gone.</p>`))) return;
+  try { const r = await api('POST',`/api/vms/${id}/${verb}`,{}); toast(r.dry_run ? `dry run: ${r.operation} recorded in trace` : `${verb} ${id} accepted in ${r.ms} ms`, 'ok'); setTimeout(loadFleet, 800); } catch(e){ fail(e); }
+}
+async function vmJson(id){ try { const r = await api('GET',`/api/vms/${id}`); modal('GetMicrovm '+id, jsonBlock(r.raw)); } catch(e){ fail(e); } }
+async function runVms(){
+  try { const j = await api('POST','/api/vms/run',{ image:$('#r_image').value, version:$('#r_version').value, count:Number($('#r_count').value), idle:Number($('#r_idle').value), suspended_for:Number($('#r_susp').value), auto_resume:$('#r_auto').checked, max_duration:$('#r_max').value||null, payload:$('#r_payload').value, execution_role:$('#r_role').value, wait:$('#r_wait').checked, probe_health:$('#r_probe').checked });
+    state.openJobs.add(j.id); toast('run started'); pollJobs(true); } catch(e){ fail(e); }
+}
+function fleetBody(){ return { image:$('#s_image').value, n:Number($('#s_n').value), idle:Number($('#s_idle').value), suspended_for:Number($('#s_susp').value), max_duration:$('#s_max').value||null, payload_template:$('#s_tmpl').value, wait:$('#s_wait').checked, max_age:Number($('#s_age').value) }; }
+async function scaleFleet(){ try { const j = await api('POST','/api/fleet/scale', fleetBody()); state.openJobs.add(j.id); toast('scale started'); pollJobs(true); } catch(e){ fail(e); } }
+async function fleetVerb(verb){
+  if ((verb==='drain'||verb==='reap') && !state.cfg.dry_run && !(await confirmAction(verb, `<p><b>${verb}</b> on image <code>${esc($('#s_image').value)}</code> terminates VMs. Continue?</p>`))) return;
+  try { const j = await api('POST',`/api/fleet/${verb}`, fleetBody()); state.openJobs.add(j.id); toast(verb+' started'); pollJobs(true); } catch(e){ fail(e); }
+}
+async function leaseVm(){
+  let task = $('#e_task').value.trim();
+  if (task) { try { task = JSON.parse(task); } catch { return fail(new Error('task is not valid JSON')); } } else task = {};
+  if (task === null || typeof task !== 'object' || Array.isArray(task)) return fail(new Error('task must be a JSON object'));
+  try { const j = await api('POST','/api/lease/run',{ image:$('#e_image').value, kind:$('#e_kind').value, token:$('#e_token').value.trim(), target:$('#e_target').value.trim(), task, id:$('#e_id').value.trim(), budget:Number($('#e_budget').value), heartbeat_timeout:Number($('#e_hbt').value), slack:Number($('#e_slack').value), heartbeat_every:Number($('#e_hb').value), execution_role:$('#e_role').value, wait:$('#e_wait').checked });
+    state.openJobs.add(j.id); toast('lease started'); pollJobs(true); } catch(e){ fail(e); }
+}
+
+// ------------------------------------------------------------ call
+function prepCall(){ if (!state.vms.length) api('GET','/api/vms').then(v => { state.vms=v.items; fillVmSelect(); }).catch(fail); else fillVmSelect(); }
+function quickCall(id){ show('call'); setTimeout(()=>{ $('#c_id').value = id; }, 50); }
+function setPath(m,p,b){ $('#c_method').value=m; $('#c_path').value=p; $('#c_body').value=b||''; }
+async function callVm(){
+  const btn=$('#c_send'); btn.disabled=true; btn.textContent='sending…';
+  let body = $('#c_body').value.trim(); if (body) { try { body = JSON.parse(body); } catch { fail(new Error('body is not valid JSON')); btn.disabled=false; btn.textContent='Send'; return; } } else body = null;
+  const req = { id:$('#c_id').value, method:$('#c_method').value, path:$('#c_path').value, port:$('#c_port').value||null, ttl:Number($('#c_ttl').value), resume_patience:Number($('#c_patience').value), max_attempts:Number($('#c_attempts').value), timeout:Number($('#c_timeout').value), body };
+  const t0 = performance.now();
+  try {
+    const r = await api('POST','/api/call', req);
+    if (r.dry_run) { $('#callOut').innerHTML = `<div class="muted small">dry run: this is the request that would go out</div>${jsonBlock(r.params)}`; return; }
+    state.callHist.unshift({ t:Date.now(), req:`${req.method} ${req.path}`, id:req.id, status:r.status, ms:r.ms });
+    $('#callHist tbody').innerHTML = state.callHist.slice(0,25).map(h => `<tr><td class="muted">${new Date(h.t).toTimeString().slice(0,8)}</td><td class="mono">${esc(h.req)} <span class="muted">${esc(h.id.slice(0,14))}</span></td><td>${statusBadge(h.status)}</td><td class="num">${h.ms}</td></tr>`).join('');
+    $('#callOut').innerHTML = `
+      <div class="tiles"><div><b>${statusBadge(r.status)}</b><small>status</small></div><div><b>${r.ms} ms</b><small>end to end, incl. retries${r.token.minted_this_call?' + token mint':''}</small></div><div><b>${r.token.expires_in_s} s</b><small>token cache left (80% of TTL), ports ${r.token.ports.join(',')}</small></div></div>
+      <div class="tabs"><button class="active" data-tab="body">body</button><button data-tab="resh">response headers</button><button data-tab="reqh">request headers</button></div>
+      <div data-pane="body">${r.json !== null ? jsonBlock(r.json) : `<pre class="json">${esc(r.text)}</pre>`}</div>
+      <div data-pane="resh" hidden>${jsonBlock(r.response_headers)}</div>
+      <div data-pane="reqh" hidden><div class="muted small" style="margin-bottom:6px">${esc(r.method)} ${esc(r.url)}</div>${jsonBlock(r.request_headers)}</div>`;
+    $$('#callOut .tabs button').forEach(b => b.onclick = () => { $$('#callOut .tabs button').forEach(x=>x.classList.toggle('active',x===b)); $$('#callOut [data-pane]').forEach(p => p.hidden = p.dataset.pane !== b.dataset.tab); });
+  } catch(e){ fail(e); $('#callOut').innerHTML = `<div class="status s5">error</div> <span class="muted small">${esc(e.message)}</span>`; }
+  finally { btn.disabled=false; btn.textContent='Send'; }
+}
+async function mintToken(){
+  try { const r = await api('POST','/api/token',{ id:$('#c_id').value, ttl:Number($('#c_ttl').value), ports:[Number($('#c_port').value||8080)] });
+    if (r.dry_run) { $('#tokenOut').innerHTML = `<div class="muted small" style="margin-top:10px">dry run: CreateMicrovmAuthToken request</div>${jsonBlock(r.params)}`; return; }
+    $('#tokenOut').innerHTML = `<div class="muted small" style="margin-top:10px">CreateMicrovmAuthToken in ${r.ms} ms · TTL ${r.ttl_minutes} min · the client would cache it for ${r.cache_until_s} s</div>${jsonBlock(r.masked)}<div class="actions"><button class="btn sm" onclick="modal('Token headers (credential: treat as secret)', jsonBlock(${esc(JSON.stringify(r.headers)).replace(/'/g,'&#39;')}))">reveal full value</button><button class="btn sm" onclick="modal('Request', jsonBlock(${esc(JSON.stringify(r.request)).replace(/'/g,'&#39;')}))">request</button></div>`;
+  } catch(e){ fail(e); }
+}
+
+// ------------------------------------------------------------ logs
+let logTimer=null;
+function prepLogs(){ if (!state.images.length) loadImages(); }
+$('#l_auto').onchange = e => { clearInterval(logTimer); if (e.target.checked) logTimer = setInterval(() => state.view==='logs' && loadLogs(), 5000); };
+async function loadLogs(){
+  try { const r = await api('GET',`/api/logs?image=${encodeURIComponent($('#l_image').value)}&minutes=${$('#l_min').value}&limit=${$('#l_limit').value}`);
+    $('#logMeta').innerHTML = `${esc(r.group)} · ${r.events.length} events` + sampleChip(r.sample);
+    $('#logOut').innerHTML = r.events.map(e => `<div class="ln"><span class="t">${fmtT(e.ts/1000)}</span><span class="muted" style="flex:none;width:110px;overflow:hidden;text-overflow:ellipsis">${esc(e.stream.slice(0,14))}</span><span>${esc(e.message)}</span></div>`).join('') || '<div class="muted">no events in this window</div>';
+    $('#logOut').scrollTop = $('#logOut').scrollHeight;
+  } catch(e){ fail(e); }
+}
+
+// ------------------------------------------------------------ probe
+function prepProbe(){ if (!state.images.length) loadImages(); }
+async function runProbe(){
+  let body = $('#p_body').value.trim(); if (body) { try { body = JSON.parse(body); } catch { return fail(new Error('warm body is not valid JSON')); } } else body = null;
+  try { const j = await api('POST','/api/probe',{ image:$('#p_image').value, launches:Number($('#p_launches').value), warm_calls:Number($('#p_warm').value), method:$('#p_method').value, path:$('#p_path').value, body, health_path:$('#p_health').value, idle:Number($('#p_idle').value), suspend_resume:$('#p_sr').checked, auto_resume:$('#p_auto').checked, terminate_after:$('#p_term').checked });
+    state.openJobs.add(j.id); toast('probe started'); pollJobs(true); } catch(e){ fail(e); }
+}
+
+// ------------------------------------------------------------ cost
+function prepCost(){ if (!state.images.length) loadImages(); sessionCost(); }
+async function sessionCost(){
+  try { const s = await api('POST','/api/cost',{ memory_gb:$('#k_mem').value, snapshot_gb:$('#k_snap').value, active_s:Number($('#k_act').value)*60, suspended_s:Number($('#k_sus').value)*60, cycles:$('#k_cyc').value });
+    $('#costTiles').innerHTML = `<div><b>${money(s.running_usd)}</b><small>running compute · ${s.vcpu} vCPU</small></div><div><b>${money(s.suspend_cycles_usd)}</b><small>suspend cycles</small></div><div><b>${money(s.suspended_storage_usd,6)}</b><small>suspended storage</small></div><div class="ember"><b>${money(s.total_usd)}</b><small>session total</small></div><div><b>${money(s.vs_always_on_usd)}</b><small>always-on equivalent</small></div><div class="ok"><b>${s.savings_pct}%</b><small>saved</small></div>`;
+  } catch(e){ fail(e); }
+}
+['#k_mem','#k_snap','#k_act','#k_sus','#k_cyc'].forEach(s => $(s).addEventListener('input', sessionCost));
+async function fleetCost(){
+  try { const r = await api('GET',`/api/fleet/cost?image=${encodeURIComponent($('#k_image').value)}&memory_gb=${$('#k_fmem').value}`);
+    $('#fleetCostTiles').innerHTML = `<div><b>${r.running_vms}</b><small>RUNNING + PENDING</small></div><div><b>${r.suspended_vms}</b><small>SUSPENDED</small></div><div class="ember"><b>${money(r.running_usd_per_hour)}</b><small>compute per hour</small></div><div><b>${money(r.suspended_usd_per_hour,6)}</b><small>storage per hour${r.sample?' (sample fleet)':''}</small></div>`;
+  } catch(e){ fail(e); }
+}
+
+// ------------------------------------------------------------ trace
+let traceTimer=null;
+async function loadTrace(){
+  try { const t = await api('GET',`/api/trace?since=${state.traceSeq}`); if (t.seq < state.traceSeq) { state.trace=[]; } state.traceSeq = t.seq; state.trace.push(...t.items); state.trace = state.trace.slice(-500); renderTrace(); } catch(e){ fail(e); }
+}
+function renderTrace(){
+  const f = $('#t_filter').value.toLowerCase();
+  const rows = state.trace.filter(e => !f || (e.service+'.'+e.op).toLowerCase().includes(f)).slice().reverse();
+  $('#traceEmpty').hidden = rows.length > 0;
+  $('#traceTable tbody').innerHTML = rows.map(e => `<tr><td class="muted">${fmtT(e.t)}</td><td class="mono">${esc(e.service)}</td><td class="mono">${esc(e.op)}</td><td>${e.error ? '<span class="status s5">ERR</span>' : statusBadge(e.status ?? (e.service==='dry-run'?'DRY':null))}</td><td class="num">${e.ms}</td><td><button class="btn sm" onclick='traceDetail(${e.seq})'>detail</button>${e.error?` <span class="small" style="color:var(--bad)">${esc(e.error.slice(0,80))}</span>`:''}</td></tr>`).join('');
+}
+function traceDetail(seq){ const e = state.trace.find(x=>x.seq===seq); if (!e) return; modal(`${e.service}.${e.op}`, `<div class="kv"><dt>status</dt><dd>${e.error ? esc(e.error) : (e.status ?? '–')}</dd><dt>duration</dt><dd>${e.ms} ms</dd></div><h3 style="margin-top:12px">request</h3>${jsonBlock(e.params)}<h3 style="margin-top:12px">response</h3>${jsonBlock(e.response)}`); }
+async function clearTrace(){ await api('DELETE','/api/trace'); state.trace=[]; renderTrace(); }
+$('#t_filter').addEventListener('input', renderTrace);
+$('#t_auto').onchange = e => { clearInterval(traceTimer); if (e.target.checked) traceTimer = setInterval(() => state.view==='trace' && loadTrace(), 2000); };
+traceTimer = setInterval(() => state.view==='trace' && $('#t_auto').checked && loadTrace(), 2000);
+
+// ------------------------------------------------------------ settings
+async function loadProfiles(){
+  try { const r = await api('GET','/api/profiles');
+    $('#cr_profile').innerHTML = '<option value="">choose…</option>' + r.profiles.map(p => `<option ${p===r.active_profile?'selected':''}>${esc(p)}</option>`).join('');
+    const env = Object.entries(r.env_credentials).filter(([k,v])=>v).map(([k])=>k);
+    if (env.length) $('#credOut').innerHTML = `process environment currently holds: <span class="mono">${esc(env.join(', '))}</span>`;
+  } catch(e){ fail(e); }
+}
+function credResult(r){
+  if (r.ok) { $('#credOut').innerHTML = `<span style="color:var(--ok)">verified with STS</span> · account <span class="mono">${esc(r.account)}</span> · <span class="mono">${esc(r.arn)}</span> · region ${esc(r.region)} · ${r.profile ? 'profile '+esc(r.profile) : 'static keys'+(r.session_token?' with session token':'')} · applied: <span class="mono">${esc((r.applied||[]).join(', ')||'profile only')}</span>`; toast('credentials verified','ok'); }
+  else { $('#credOut').innerHTML = `<span style="color:var(--bad)">not verified</span> · ${esc(r.error)} · applied: <span class="mono">${esc((r.applied||[]).join(', ')||'none')}</span>`; toast('credentials did not verify','bad'); }
+}
+async function afterCreds(){ state.images=[]; state.vms=[]; state.prefilled=true; await loadConfig(); prepSettings(); }
+async function applyProfile(){
+  const profile = $('#cr_profile').value; if (!profile) return toast('choose a profile','bad');
+  try { const r = await api('POST','/api/credentials',{ profile, dry_run: $('#cr_live').checked ? false : null }); credResult(r); await afterCreds(); } catch(e){ fail(e); }
+}
+async function applyPasted(){
+  const text = $('#cr_text').value; if (!text.trim()) return toast('paste the export lines first','bad');
+  try { const r = await api('POST','/api/credentials',{ text, dry_run: $('#cr_live').checked ? false : null }); credResult(r); if (r.ok) $('#cr_text').value=''; await afterCreds(); } catch(e){ fail(e); }
+}
+async function clearCreds(){ try { await api('POST','/api/credentials/clear',{}); $('#credOut').textContent='static keys removed from the process environment'; await afterCreds(); } catch(e){ fail(e); } }
+function prepSettings(){
+  loadProfiles();
+  const c = state.cfg; if (!c) return;
+  $('#cfg_region').innerHTML = c.regions.map(r => `<option ${r===c.region?'selected':''}>${r}</option>`).join('');
+  $('#cfg_profile').value = c.profile||''; $('#cfg_bucket').value = c.artifact_bucket||''; $('#cfg_build').value = c.build_role_arn||''; $('#cfg_exec').value = c.execution_role_arn||'';
+  $('#cfg_account').textContent = c.account; $('#cfg_base').textContent = c.base_image_arn;
+}
+async function saveConfig(){
+  try { await api('POST','/api/config',{ region:$('#cfg_region').value, profile:$('#cfg_profile').value, artifact_bucket:$('#cfg_bucket').value, build_role_arn:$('#cfg_build').value, execution_role_arn:$('#cfg_exec').value });
+    await loadConfig(); state.images=[]; state.vms=[]; prepSettings(); toast('configuration applied','ok'); } catch(e){ fail(e); }
+}
+async function bootstrap(){ try { const j = await api('POST','/api/bootstrap',{ prefix:$('#bs_prefix').value }); state.openJobs.add(j.id); toast('bootstrap started'); pollJobs(true); } catch(e){ fail(e); } }
+
+// ------------------------------------------------------------ jobs
+const JOB_HOME = { build:'images', run:'fleet', lease:'lease', scale:'fleet', drain:'fleet', suspend_all:'fleet', resume_all:'fleet', reap:'fleet', probe:'probe', bootstrap:'bootstrap' };
+let jobTimer=null;
+async function pollJobs(force){
+  try { const r = await api('GET','/api/jobs'); state.jobs = r.items; renderJobs(); } catch(e){ /* quiet */ }
+  const running = state.jobs.filter(j => j.status==='running').length;
+  $('#jobsBadge').textContent = running || '';
+  clearTimeout(jobTimer); jobTimer = setTimeout(pollJobs, running ? 1500 : 6000);
+  if (force && running) { /* refresh fleet a bit later so new VMs show up */ setTimeout(() => state.view==='fleet' && loadFleet(), 2500); }
+}
+function renderJobs(){
+  const byHome = {};
+  state.jobs.forEach(j => { const h = JOB_HOME[j.kind] || 'overview'; (byHome[h] ||= []).push(j); });
+  Object.keys(JOB_HOME).map(k=>JOB_HOME[k]).concat(['overview']).forEach(h => {
+    const el = $('#jobs-'+h); if (!el) return;
+    const list = (h==='overview' ? state.jobs : byHome[h]||[]).slice(0, h==='overview'?5:6);
+    if (list.length) el.innerHTML = list.map((j,i) => jobCard(j, i===0 && h!=='overview')).join(''); else if (h==='probe') el.innerHTML='<div class="empty">No probe run yet.</div>'; else if (h==='overview') el.innerHTML='<div class="empty">Nothing started yet.</div>'; else el.innerHTML='';
+  });
+  $('#jobs-all').innerHTML = state.jobs.map(jobCard).join('') || '<div class="empty">No jobs yet.</div>';
+  $('#drawerMeta').textContent = `${state.jobs.length} total`;
+  $$('.job .jh').forEach(h => h.onclick = () => { const id=h.parentElement.dataset.id; const isOpen=h.parentElement.classList.contains('open'); if (isOpen) { state.openJobs.delete(id); state.closedJobs.add(id); } else { state.closedJobs.delete(id); state.openJobs.add(id); } renderJobs(); });
+  // keep logs scrolled to bottom while running
+  $$('.job.open').forEach(j => { const l=$('.log', j); if (l && j.dataset.status==='running') l.scrollTop = l.scrollHeight; });
+}
+function jobCard(j, latest){
+  const dur = ((j.finished || Date.now()/1000) - j.started).toFixed(1);
+  const open = state.closedJobs.has(j.id) ? false : (state.openJobs.has(j.id) || j.status==='running' || latest);
+  const summary = Object.entries(j.params||{}).filter(([k,v]) => v !== null && v !== '' && v !== undefined && typeof v !== 'object').slice(0,5).map(([k,v]) => `${k}=${v}`).join(' ');
+  return `<div class="job ${open?'open':''}" data-id="${j.id}" data-status="${j.status}">
+    <div class="jh"><span class="kind">${esc(j.kind)}</span><span class="st ${j.status}">${j.status}</span><span class="muted small">${esc(summary)}</span><span class="meta">${dur}s · ${fmtT(j.started)}</span></div>
+    <div class="jb">
+      <div class="log">${j.events.map(e => `<div class="ln"><span class="t">${fmtT(e.t)}</span><span class="lv ${e.level}"></span><span>${esc(e.msg)}</span></div>${e.data ? `<details><summary>data</summary><pre>${esc(JSON.stringify(e.data, null, 2))}</pre></details>` : ''}`).join('')}</div>
+      ${j.result ? `<div class="result">${renderResult(j)}</div>` : ''}
+    </div></div>`;
+}
+function renderResult(j){
+  const r = j.result;
+  if (r.dry_run) return `<div class="muted small" style="margin-bottom:6px">dry run · ${esc(r.operation)} · ${esc(r.note)}</div>${jsonBlock(r.params)}`;
+  if (j.kind==='build') return `<div class="tiles"><div><b>${esc(r.version)}</b><small>version, ACTIVE</small></div><div><b>${r.build_seconds ?? '–'} s</b><small>Dockerfile → snapshot</small></div><div><b>${r.memory_snapshot_bytes ? (r.memory_snapshot_bytes/1e6).toFixed(0)+' MB' : '–'}</b><small>memory snapshot</small></div><div><b>${r.disk_snapshot_bytes ? (r.disk_snapshot_bytes/1e6).toFixed(0)+' MB' : '–'}</b><small>disk snapshot</small></div></div>`;
+  if (j.kind==='run') return `<div class="scroll"><table><thead><tr><th>microvm</th><th>state</th><th class="num">api s</th><th class="num">running s</th><th class="num">serving s</th><th>endpoint</th></tr></thead><tbody>${r.launched.map(v => `<tr><td class="mono">${esc(v.microvm_id)}</td><td>${pill(v.state)}</td><td class="num">${v.api_s ?? '–'}</td><td class="num">${v.running_s ?? '–'}</td><td class="num">${v.first_byte_s ?? '–'}</td><td class="mono small">${esc(v.endpoint||'')}</td></tr>`).join('')}</tbody></table></div>`;
+  if (j.kind==='scale') return `<div class="tiles"><div><b>${r.before} → ${r.after}</b><small>active members</small></div><div><b>${r.wall_s} s</b><small>wall time</small></div><div><b>${r.launched.length}</b><small>launched</small></div></div>`;
+  if (j.kind==='lease') {
+    const v = (r.launched||[])[0] || {}, f = r.final || {}, L = f.lease || {}, P = f.progress || {};
+    const outcome = L.done ? (L.error ? 'failed' : 'done') : L.lost ? 'lost' : (r.final ? 'still open' : 'not followed');
+    return `<div class="tiles">
+      <div><b>${esc((v.microvm_id||'–').slice(0,18))}</b><small>${v.state ? pill(v.state) : ''} ${v.running_s ? `RUNNING after ${v.running_s} s` : `api ${v.api_s ?? '–'} s`}</small></div>
+      <div><b>${esc(f.phase || '–')}</b><small>last phase in the VM · ${f.elapsed_s != null ? fmtDur(f.elapsed_s) : '–'}${P.total ? ` · ${P.done}/${P.total} steps` : ''}</small></div>
+      <div class="${L.done && !L.error ? 'ok' : (L.error || L.lost) ? 'bad' : ''}"><b>${outcome}</b><small>lease ${esc(L.kind || (r.lease||{}).kind || '')} · ${L.heartbeats ?? 0} heartbeats${L.error ? ' · ' + esc(L.error.error_type || '') : ''}</small></div>
+      <div><b class="mono" style="font-size:.9rem">${esc(String(r.client_token||'').slice(0,16))}…</b><small>clientToken (64 hex): a replay returns this same VM</small></div>
+    </div>
+    <div class="actions">${v.microvm_id ? `<button class="btn sm" onclick="show('fleet');jobPanel('${esc(v.microvm_id)}')">follow the job in the fleet table</button>` : ''}</div>
+    <details style="margin-top:8px"><summary class="small" style="cursor:pointer;color:var(--plane)">raw result</summary>${jsonBlock(r)}</details>`;
+  }
+  if (j.kind==='probe') {
+    const l=r.launch||{}, w=r.warm_ms, sr=r.suspend_resume, ar=r.auto_resume;
+    const spark = w ? `<svg class="spark" viewBox="0 0 ${w.samples.length*14+40} 70" role="img" aria-label="warm request latency per call">${w.samples.map((v,i)=>`<rect x="${i*14+4}" y="${64-Math.min(60,v/Math.max(...w.samples)*60)}" width="10" height="${Math.min(60,v/Math.max(...w.samples)*60)}" rx="2" fill="var(--ember)"><title>call ${i+1}: ${v} ms</title></rect>`).join('')}<text x="${w.samples.length*14+6}" y="66" font-size="9" fill="currentColor">ms</text></svg>` : '';
+    return `<div class="tiles">
+      <div class="ember"><b>${l.first_byte_p50_s ?? '–'} s</b><small>RunMicrovm → serving, p50 (p95 ${l.first_byte_p95_s ?? '–'})</small></div>
+      ${w?`<div class="ember"><b>${w.p50} ms</b><small>warm p50 · p95 ${w.p95} · min ${w.min}</small></div>`:''}
+      ${sr?`<div><b>${sr.suspend_s} / ${sr.resume_to_serving_s} s</b><small>suspend / resume to serving${sr.same_microvm_id===true?' · same VM':''}</small></div>`:''}
+      ${ar?`<div class="${ar.status===200?'ok':'bad'}"><b>${ar.first_request_s} s</b><small>auto-resume, first request → ${ar.status}</small></div>`:''}
+    </div>${spark}<details style="margin-top:8px"><summary class="small" style="cursor:pointer;color:var(--plane)">raw result</summary>${jsonBlock(r)}</details>`;
+  }
+  if (j.kind==='bootstrap') return `${jsonBlock({artifact_bucket:r.artifact_bucket, build_role_arn:r.build_role_arn, execution_role_arn:r.execution_role_arn})}<pre class="json">${esc(r.exports)}</pre>`;
+  return jsonBlock(r);
+}
+
+// ------------------------------------------------------------ boot
+(async function boot(){
+  try { await loadConfig(); } catch(e){ fail(e); }
+  const first = location.hash.slice(1);
+  if (first && $('#view-'+first)) show(first); else loadOverview();
+  pollJobs();
+})();
+</script>
+</body>
+</html>

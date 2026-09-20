@@ -49,3 +49,7 @@ The VM is ARM64 only. Packages without aarch64 wheels fall back to source builds
 ## Uploads or downloads through the endpoint are slow
 
 Endpoint bandwidth is capped by VM size, roughly 1 MB/s at 0.5 GB up to 16 MB/s at 8 GB. Move bulk data through S3 or EFS using the execution role and send only pointers through the endpoint.
+
+## `AccessDeniedException: not authorized to perform: lambda:PassNetworkConnector`
+
+The caller of `RunMicrovm` needs `lambda:PassNetworkConnector` on the ingress and egress connector ARNs, including the AWS-managed defaults it passes when you name none. An admin user never sees this; a Step Functions role or a Lambda execution role does. Grant it on `arn:aws:lambda:*:aws:network-connector:aws-network-connector:*`; `mvm lease policy` includes the statement.

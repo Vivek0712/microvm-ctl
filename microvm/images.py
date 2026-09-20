@@ -19,6 +19,7 @@ import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from microvm.client import image_arn, lambda_client, microvm_client
 from microvm.config import PlaneConfig
@@ -107,9 +108,17 @@ class ImageBuilder:
         os_capabilities_all: bool = False,
         description: str | None = None,
         wait: bool = True,
+        log: Callable[[str], None] | None = None,
     ) -> BuiltImage:
-        """Create (or version-bump) an image from a local app directory and wait for the build."""
-        uri = self.upload(name, self.package(app_dir))
+        """Create (or version-bump) an image from a local app directory and wait for the build.
+
+        `log`, when given, is called with a one-line message at each milestone
+        (packaged, uploaded, build requested, each build state change, ACTIVE)."""
+        say = log or (lambda _m: None)
+        payload = self.package(app_dir)
+        say(f"packaged {app_dir} -> {len(payload) / 1e6:.2f} MB zip (microvm_hooks.py injected)")
+        uri = self.upload(name, payload)
+        say(f"uploaded {uri}")
         params: dict = {
             "baseImageArn": self.cfg.base_image_arn,
             "buildRoleArn": self._require("build_role_arn"),
@@ -130,12 +139,15 @@ class ImageBuilder:
         if self._image_exists(name):
             # update accepts neither `name` nor `tags` — they are create-only
             resp = self.api.update_microvm_image(imageIdentifier=self.arn(name), **params)
+            say(f"UpdateMicrovmImage -> new version {resp['imageVersion']}")
         else:
             resp = self.api.create_microvm_image(name=name, **params)
+            say(f"CreateMicrovmImage -> version {resp['imageVersion']}")
         built = BuiltImage(image_arn=resp["imageArn"], name=name, version=resp["imageVersion"])
         if wait:
-            self.wait_for_build(built, started)
+            self.wait_for_build(built, started, log=log)
             self.ensure_active(built)
+            say(f"version {built.version} is ACTIVE")
         return built
 
     def arn(self, name: str) -> str:
@@ -154,15 +166,26 @@ class ImageBuilder:
             raise ImageBuildError(f"PlaneConfig.{attr} is not set")
         return v
 
-    def wait_for_build(self, built: BuiltImage, started: float, timeout: int = 1800) -> None:
+    def wait_for_build(
+        self,
+        built: BuiltImage,
+        started: float,
+        timeout: int = 1800,
+        log: Callable[[str], None] | None = None,
+    ) -> None:
         """Poll the build until SUCCESSFUL; surface CloudWatch log pointer on failure."""
+        say = log or (lambda _m: None)
         deadline = time.time() + timeout
+        last_state = None
         while time.time() < deadline:
             builds = self.api.list_microvm_image_builds(
                 imageIdentifier=self.arn(built.name), imageVersion=built.version
             )["items"]
             if builds:
                 b = builds[0]
+                if b["buildState"] != last_state:
+                    last_state = b["buildState"]
+                    say(f"build {b['buildId']} is {last_state} ({time.time() - started:.0f}s)")
                 if b["buildState"] in TERMINAL_BUILD:
                     detail = self.api.get_microvm_image_build(
                         imageIdentifier=self.arn(built.name),
@@ -172,13 +195,18 @@ class ImageBuilder:
                     if b["buildState"] == "FAILED":
                         raise ImageBuildError(
                             f"build failed: {detail.get('stateReason', 'unknown')} — "
-                            f"see CloudWatch /aws/lambda/microvms/{built.name}"
+                            f"see CloudWatch /aws/lambda-microvms/{built.name}"
                         )
                     snap = detail.get("snapshotBuild", {})
                     built.build_id = b["buildId"]
                     built.memory_snapshot_bytes = snap.get("memorySnapshotSizeInBytes")
                     built.disk_snapshot_bytes = snap.get("diskSnapshotSizeInBytes")
                     built.build_seconds = round(time.time() - started, 1)
+                    say(
+                        f"snapshot: memory {(built.memory_snapshot_bytes or 0) / 1e6:.0f} MB, "
+                        f"disk {(built.disk_snapshot_bytes or 0) / 1e6:.0f} MB, "
+                        f"{built.build_seconds}s total"
+                    )
                     return
             time.sleep(10)
         raise ImageBuildError(f"build of {built.name}:{built.version} timed out")

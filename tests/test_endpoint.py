@@ -5,7 +5,7 @@ import time
 import pytest
 
 from microvm.config import AUTH_HEADER, PORT_HEADER, PlaneConfig
-from microvm.endpoint import EndpointClient
+from microvm.endpoint import EndpointClient, EndpointError
 
 
 class FakeResponse:
@@ -94,3 +94,79 @@ def test_token_expiry_triggers_remint(client, monkeypatch):
     client._token_expiry = time.time() - 1
     client.get("/b")
     assert client.api.minted == 2
+
+
+# ---------------------------------------------------------------- job telemetry
+class FakeStreamResponse(FakeResponse):
+    def __init__(self, status, lines=(), body=None):
+        super().__init__(status)
+        self.lines, self.body, self.closed = list(lines), body, False
+
+    def json(self):
+        return self.body
+
+    def iter_lines(self):
+        yield from self.lines
+
+    def close(self):
+        self.closed = True
+
+
+class FakeStreamHttp(FakeHttp):
+    def __init__(self, responses):
+        super().__init__([])
+        self.responses = list(responses)
+
+    def request(self, method, url, headers=None, timeout=None, **kw):
+        self.calls.append({"method": method, "url": url, "headers": dict(headers), "timeout": timeout, **kw})
+        return self.responses.pop(0)
+
+
+def test_status_returns_the_snapshot_and_passes_since(client):
+    snap = {"phase": "x", "seq": 4, "log_tail": []}
+    client.http = FakeStreamHttp([FakeStreamResponse(200, body=snap), FakeStreamResponse(200, body=snap)])
+    assert client.status() == snap
+    assert client.status(since=2) == snap
+    assert client.http.calls[0]["url"].endswith("/status")
+    assert client.http.calls[1]["url"].endswith("/status?since=2")
+
+
+def test_status_raises_on_non_200(client):
+    client.http = FakeStreamHttp([FakeStreamResponse(500, body={})])
+    with pytest.raises(EndpointError):
+        client.status()
+
+
+def test_watch_yields_parsed_events_and_stops_when_the_lease_is_done(client):
+    lines = [
+        b"event: snapshot",
+        b'data: {"phase": "a", "lease": {"done": false}}',
+        b"",
+        b'data: {"t": 1, "level": "info", "msg": "hello"}',
+        b"data: not json",
+        b'data: {"phase": "b", "lease": {"done": true}}',
+        b'data: {"msg": "never seen"}',
+    ]
+    resp = FakeStreamResponse(200, lines=lines)
+    client.http = FakeStreamHttp([resp])
+    events = list(client.watch(timeout=30))
+    assert [e.get("phase", e.get("msg")) for e in events] == ["a", "hello", "b"]
+    assert resp.closed
+    assert client.http.calls[0]["stream"] is True
+    assert client.http.calls[0]["url"].endswith("/events")
+
+
+def test_watch_stops_at_the_deadline(client, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr("microvm.endpoint.time.time", lambda: clock[0])
+
+    def lines():
+        yield b'data: {"msg": "one"}'
+        clock[0] += 100
+        yield b'data: {"msg": "two"}'
+
+    resp = FakeStreamResponse(200)
+    resp.iter_lines = lines
+    client.http = FakeStreamHttp([resp])
+    assert [e["msg"] for e in client.watch(timeout=10)] == ["one"]
+    assert resp.closed

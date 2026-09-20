@@ -87,6 +87,32 @@ mvm call microvm-abc /execute -X POST -d '{"code":"print(2+2)"}'
 mvm call microvm-abc /metrics --port 9100
 ```
 
+### `mvm status ID [--port PORT]`
+
+Prints the hook runtime's job snapshot (`GET /status`): phase, elapsed time, progress, counters, the lease state, and the log tail. Works for any VM running `HookApp`, leased or not.
+
+### `mvm watch ID [--port PORT] [--timeout 600]`
+
+Streams `GET /events` into a live table of phase, progress, and heartbeats, printing each log line as it arrives. Stops when the lease is done or after `--timeout` seconds.
+
+## Leases
+
+### `mvm lease asl --image NAME [--execution-role ARN] [--budget 900] [--heartbeat 120] [--slack 120] [--heartbeat-every 30] [--name Lease] [--task-expr '$states.input']`
+
+Prints the JSONata Step Functions state machine for one lease as JSON. A bare image name is resolved with the account from the execution role ARN, so this needs no credentials. See [Integrations](integrations.md).
+
+### `mvm lease policy --kind sfn|durable|sqs|eventbridge|http [--orchestrator ARN] [--execution-role ARN]`
+
+Prints two IAM policy documents: `execution_role` (what the VM needs to complete a lease of that kind against `--orchestrator`) and `orchestrator_role` (run, terminate, list, get, `iam:PassRole` on the execution role, and `lambda:PassNetworkConnector` on the connectors).
+
+### `mvm lease run IMAGE --kind K [--token T] [--target X] [--task JSON] [--id LABEL] [--budget 900] [--heartbeat 120] [--slack 120] [--heartbeat-every 30] [--version V] [--execution-role ARN] [--wait]`
+
+Launches one lease through `FleetManager.lease` for manual tests. `--token` is required for every kind except `none`; `--target` is the URL, queue URL, or bus name for `http`, `sqs`, and `eventbridge`. Prints the VM id and endpoint; follow it with `mvm watch`.
+
+```console
+mvm lease run handoff-agent --kind none --task '{"steps": ["echo hi"]}' --wait
+```
+
 ## Observability
 
 ### `mvm top [--image NAME] [--watch] [--interval 3]`
@@ -95,7 +121,7 @@ A state-colored table of every microVM with counts per state. `--watch` refreshe
 
 ### `mvm logs IMAGE [--minutes 15]`
 
-Tails the CloudWatch log group `/aws/lambda/microvms/<image>`. Build logs land here too, one stream per VM, which is where a failed Dockerfile step shows up.
+Tails the CloudWatch log group `/aws/lambda-microvms/<image>`, falling back to the older `/aws/lambda/microvms/<image>` name. Build logs land here too, one stream per VM, which is where a failed Dockerfile step shows up.
 
 ### `mvm cost [--memory-gb 2] [--snapshot-gb SIZE] [--active 30] [--suspended 480] [--cycles 1]`
 
@@ -104,3 +130,9 @@ Prices a session shape with the published `us-east-1` rates: running compute, su
 ```console
 mvm cost --memory-gb 2 --snapshot-gb 0.61 --active 30 --suspended 480
 ```
+
+## Playground
+
+### `mvm playground [--host 127.0.0.1] [--port 8765] [--dry-run] [--no-open]`
+
+Starts the local web app and opens a browser tab. Everything in this reference is reachable from it, parameterised, with live job logs and a trace of every AWS API call. See [The playground](playground.md).

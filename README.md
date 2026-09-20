@@ -1,10 +1,10 @@
 # microvm-ctl
 
-**The control and execution plane for [AWS Lambda MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/lambda-microvms-guide.html).** Build a snapshot image from a Dockerfile, launch Firecracker microVMs in seconds, scale a fleet inside the quotas your account actually has, call into every VM over its authenticated endpoint, and watch the whole thing live. One Python SDK, one `mvm` command.
+**The control and execution plane for [AWS Lambda MicroVMs](https://docs.aws.amazon.com/lambda/latest/dg/lambda-microvms-guide.html).** Build a snapshot image from a Dockerfile, launch Firecracker microVMs in seconds, scale a fleet inside the quotas your account actually has, call into every VM over its authenticated endpoint, watch the whole thing live, and hand a VM a task from Step Functions, Lambda durable functions, or any orchestrator through a lease the VM completes itself. One Python SDK, one `mvm` command.
 
 [![ci](https://github.com/Vivek0712/microvm-ctl/actions/workflows/ci.yml/badge.svg)](https://github.com/Vivek0712/microvm-ctl/actions/workflows/ci.yml)
 [![pypi](https://img.shields.io/pypi/v/microvm-ctl)](https://pypi.org/project/microvm-ctl/)
-![python](https://img.shields.io/badge/python-3.9%20to%203.12-blue)
+![python](https://img.shields.io/badge/python-3.9%20to%203.13-blue)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green)
 
 ```console
@@ -33,6 +33,8 @@ Lambda MicroVMs exposes the primitive under Lambda itself: a Firecracker VM with
 | In-VM hook runtime | zero-dependency server for `/ready`, `/validate`, `/run`, `/resume`, `/suspend`, `/terminate` plus your own routes | `microvm/hooks/server.py` |
 | Observability and cost | live fleet table, CloudWatch tail, a cost model that prices a session shape before you commit to it | `microvm/monitor.py` |
 | Account bootstrap | artifact bucket plus separate build and execution roles | `microvm/bootstrap.py` |
+| Leases | `Lease`, `LeasePolicy`, `FleetManager.lease`: one task per VM, completed by the VM through a task token, callback id, HTTP, SQS, or EventBridge | `microvm/lease.py` |
+| Orchestrator integrations | generated Step Functions state machine and IAM (`mvm lease asl`, `mvm lease policy`), `lease_microvm` for Lambda durable functions | `microvm/integrations/` |
 
 The `lambda-microvms` botocore service model ships inside the package, so the plane works on whatever boto3 you already have.
 
@@ -112,6 +114,14 @@ app.serve(port=8080)
 
 ![mvm cost](docs/img/mvm-cost.png)
 
+## The playground
+
+`mvm playground` opens a local web app that drives everything above against the live service: build images, run and scale fleets, call VMs, tail logs, price sessions, run a parameterised benchmark, and watch every AWS API call the process makes in a trace. A dry-run switch turns each mutating action into a printout of the exact request it would send. See [docs/playground.md](docs/playground.md).
+
+```console
+mvm playground            # http://127.0.0.1:8765
+```
+
 ## Documentation
 
 - [Quickstart](docs/quickstart.md): from an empty account to a serving VM, with the environment variables explained.
@@ -121,6 +131,8 @@ app.serve(port=8080)
 - [The hook contract](docs/hooks.md): what each hook is for and what breaks when you ignore it.
 - [Quotas and cost](docs/quotas-and-cost.md): the quota walls, what counts against them, and the cost model with worked examples.
 - [Troubleshooting](docs/troubleshooting.md): the errors I hit on the live service and what each one meant.
+- [The playground](docs/playground.md): the local web app over the whole SDK, and how to host it.
+- [Integrations](docs/integrations.md): the lease contract for handing a VM to Step Functions, Lambda durable functions, or your own orchestrator, and what the plane should own.
 
 ## See it working: eight examples and the article series
 

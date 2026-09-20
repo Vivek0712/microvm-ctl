@@ -67,6 +67,28 @@ Route handlers receive the parsed JSON body (or `{"_raw": ...}` when the body is
 
 `app.serve(port, background=True)` returns the server instead of blocking, which is how the unit tests drive it without AWS.
 
+## on_lease and job telemetry
+
+When `runHookPayload` is a lease payload (see [Integrations](integrations.md)) and an `on_lease` handler is registered, `/run` answers 200 at once and the handler runs in a daemon thread while the runtime heartbeats to the orchestrator every `heartbeat_s` seconds.
+
+```python
+from microvm_hooks import HookApp, LeaseError
+
+@app.on_lease
+def work(task, lease):                 # task is the payload's "task"; lease is a LeaseContext
+    lease.job.phase("test")
+    lease.job.progress(1, 3)
+    lease.job.log("running", level="info", cmd="make test")
+    lease.check()                      # raises LeaseLost if the orchestrator stopped waiting
+    if broken:
+        raise LeaseError("StepFailed", "exit 1", retryable=False, data={"step": 1})
+    return {"passed": True}            # the success result
+```
+
+`LeaseContext` has `.task`, `.lease`, `.microvm_id`, `.job`, `.lost`, `.heartbeats`, and `.check()`. Returning sends success; `LeaseError` sends a typed failure; any other exception sends `Unexpected`; `/terminate` mid-flight sends `Terminated` with `retryable: true`. A payload without a handler logs a warning and still returns 200.
+
+`app.job` is always available: `phase(name)`, `progress(done, total=None)`, `log(msg, level="info", **data)` (kept in a ring buffer and printed as one JSON line to stdout), `counter(name, value)`, and `snapshot()`. The runtime serves `GET /status` (the snapshot; `?since=<seq>` for newer log lines only) and `GET /events` (Server-Sent Events: one `data:` line per log entry plus a snapshot every 5 s). `mvm status` and `mvm watch` read them.
+
 ## Timeouts
 
 The builder's `default_hooks()` sets `/ready` to 300 s, `/validate` to 120 s, `/run` and `/resume` to 60 s, and `/suspend` and `/terminate` to 30 s. Pass your own `hooks` dict to `ImageBuilder.build` to change them.

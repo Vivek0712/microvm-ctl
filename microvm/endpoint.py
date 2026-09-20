@@ -15,6 +15,7 @@ retries the two endpoint errors you must design for:
 
 from __future__ import annotations
 
+import json
 import random
 import time
 
@@ -126,6 +127,47 @@ class EndpointClient:
                 pass
             time.sleep(1)
         raise EndpointError(f"{self.microvm_id} not serving {path} after {timeout}s")
+
+    # -- job telemetry (HookApp built-in /status and /events) -------------------
+    def status(self, since: int | None = None) -> dict:
+        """The hook runtime's job snapshot (`GET /status`): phase, progress, counters,
+        the log tail, and the lease state. `since` returns only log lines with a
+        sequence number above it."""
+        path = "/status" if since is None else f"/status?since={int(since)}"
+        resp = self.get(path, timeout=10)
+        if resp.status_code != 200:
+            raise EndpointError(f"{self.microvm_id} answered {resp.status_code} on {path}")
+        return resp.json()
+
+    def watch(self, timeout: float = 600):
+        """Stream `GET /events` (Server-Sent Events) and yield each parsed JSON object:
+        log lines as they happen plus a snapshot every few seconds. Stops when a
+        snapshot reports the lease done, on `timeout` seconds, or when the VM closes
+        the stream."""
+        deadline = time.time() + timeout
+        resp = self.request("GET", "/events", timeout=(10, 30), max_attempts=1, stream=True)
+        if resp.status_code != 200:
+            raise EndpointError(f"{self.microvm_id} answered {resp.status_code} on /events")
+        try:
+            for line in resp.iter_lines():
+                if time.time() > deadline:
+                    return
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", "replace")
+                if not line.startswith("data:"):
+                    continue
+                try:
+                    obj = json.loads(line[5:].strip())
+                except ValueError:
+                    continue
+                yield obj
+                lease = obj.get("lease") if isinstance(obj, dict) else None
+                if isinstance(lease, dict) and lease.get("done"):
+                    return
+        except requests.RequestException:
+            return
+        finally:
+            resp.close()
 
     def shell_token(self, minutes: int = 15) -> dict[str, str]:
         """Token for interactive shell access (VM must run with SHELL_INGRESS)."""

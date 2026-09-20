@@ -10,13 +10,17 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e ".[dev]"
+      # the durable integration and its tests need the durable SDKs, which require 3.11+;
+      # on older interpreters those tests skip themselves
+      - if: matrix.python-version == '3.13'
+        run: python -m pip install -e ".[durable]" aws-durable-execution-sdk-python-testing
       - run: python -m pytest -q
       - run: python -m ruff check microvm tests benchmarks
       - run: mvm --version

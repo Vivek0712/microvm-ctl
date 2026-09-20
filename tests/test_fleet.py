@@ -67,3 +67,20 @@ def test_idle_policy_serialises_to_api_names():
         "suspendedDurationSeconds": 3600,
         "autoResumeEnabled": False,
     }
+
+
+def test_run_params_carries_client_token(monkeypatch):
+    from microvm.config import PlaneConfig
+    from microvm.fleet import FleetManager
+
+    monkeypatch.setattr("microvm.fleet.microvm_client", lambda region, profile: object())
+    monkeypatch.setattr("microvm.fleet.applied_quotas", lambda cfg: {})
+    monkeypatch.setattr("microvm.fleet.image_arn", lambda name, region, profile: f"arn:img:{name}")
+    fm = FleetManager.__new__(FleetManager)
+    fm.cfg = PlaneConfig(region="us-east-1")
+    params = fm.run_params("img", run_payload='{"callback_id": "abc"}', max_duration=900,
+                           client_token="lease-abc")
+    assert params["clientToken"] == "lease-abc"
+    assert params["runHookPayload"] == '{"callback_id": "abc"}'
+    assert params["maximumDurationInSeconds"] == 900
+    assert "clientToken" not in fm.run_params("img")

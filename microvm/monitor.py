@@ -77,22 +77,29 @@ class FleetMonitor:
             by_state[vm["state"]] = by_state.get(vm["state"], 0) + 1
         return {"total": len(items), "by_state": by_state, "members": items}
 
+    @staticmethod
+    def log_groups(image_name: str) -> list[str]:
+        """Candidate log groups, service name first: build + runtime logs land in
+        /aws/lambda-microvms/<image-name>, one stream per microVM; the old
+        /aws/lambda/microvms/<image-name> name is tried second."""
+        return [f"/aws/lambda-microvms/{image_name}", f"/aws/lambda/microvms/{image_name}"]
+
     def tail_logs(self, image_name: str, minutes: int = 15, limit: int = 200) -> list[dict]:
-        """Build + runtime logs land in /aws/lambda/microvms/<image-name>,
-        one stream per microVM."""
-        group = f"/aws/lambda/microvms/{image_name}"
-        try:
-            resp = self.logs.filter_log_events(
-                logGroupName=group,
-                startTime=int((time.time() - minutes * 60) * 1000),
-                limit=limit,
-            )
-        except self.logs.exceptions.ResourceNotFoundException:
-            return []
-        return [
-            {"stream": e["logStreamName"], "ts": e["timestamp"], "message": e["message"].rstrip()}
-            for e in resp.get("events", [])
-        ]
+        """Recent events from the image's log group (first group that exists)."""
+        for group in self.log_groups(image_name):
+            try:
+                resp = self.logs.filter_log_events(
+                    logGroupName=group,
+                    startTime=int((time.time() - minutes * 60) * 1000),
+                    limit=limit,
+                )
+            except self.logs.exceptions.ResourceNotFoundException:
+                continue
+            return [
+                {"stream": e["logStreamName"], "ts": e["timestamp"], "message": e["message"].rstrip()}
+                for e in resp.get("events", [])
+            ]
+        return []
 
     def estimate_fleet_cost_per_hour(self, image: str | None, memory_gb: float) -> dict:
         snap = self.snapshot(image)

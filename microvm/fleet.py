@@ -18,6 +18,7 @@ from typing import Callable
 
 from microvm.client import image_arn, microvm_client
 from microvm.config import TPS, PlaneConfig
+from microvm.lease import Lease, LeasePolicy, client_token, encode_payload
 from microvm.throttle import Throttled
 
 ACTIVE_STATES = {"PENDING", "RUNNING", "SUSPENDING", "SUSPENDED"}
@@ -122,7 +123,7 @@ class FleetManager:
         return self.quotas.get("MaxMemoryGb")
 
     # -- single VM ---------------------------------------------------------------
-    def run(
+    def run_params(
         self,
         image: str,
         *,
@@ -133,7 +134,14 @@ class FleetManager:
         ingress: list[str] | None = None,
         egress: list[str] | None = None,
         execution_role: str | None = None,
-    ) -> Microvm:
+        client_token: str | None = None,
+    ) -> dict:
+        """The exact RunMicrovm request `run` would send, for inspection or dry runs.
+
+        `client_token` (1 to 128 chars) makes the launch idempotent on the service
+        side: a retried request with the same token returns the same microVM instead
+        of a second one. Use it whenever the caller may replay, such as a durable
+        function step."""
         params: dict = {"imageIdentifier": image_arn(image, self.cfg.region, self.cfg.profile)}
         if version:
             params["imageVersion"] = version
@@ -149,7 +157,51 @@ class FleetManager:
         role = execution_role or self.cfg.execution_role_arn
         if role:
             params["executionRoleArn"] = role
+        if client_token:
+            params["clientToken"] = client_token
+        return params
+
+    def run(
+        self,
+        image: str,
+        *,
+        version: str | None = None,
+        idle_policy: IdlePolicy | None = None,
+        run_payload: str | None = None,
+        max_duration: int | None = None,
+        ingress: list[str] | None = None,
+        egress: list[str] | None = None,
+        execution_role: str | None = None,
+        client_token: str | None = None,
+    ) -> Microvm:
+        params = self.run_params(
+            image, version=version, idle_policy=idle_policy, run_payload=run_payload,
+            max_duration=max_duration, ingress=ingress, egress=egress, execution_role=execution_role,
+            client_token=client_token,
+        )
         return Microvm.from_api(self._run(**params))
+
+    def lease(
+        self,
+        image: str,
+        lease: Lease,
+        task: dict,
+        policy: LeasePolicy | None = None,
+        *,
+        version: str | None = None,
+        execution_role: str | None = None,
+        ingress: list[str] | None = None,
+        egress: list[str] | None = None,
+    ) -> Microvm:
+        """RunMicrovm with the lease in runHookPayload, the policy's idle policy and duration cap,
+        and clientToken = client_token(lease). One call, idempotent on the token."""
+        policy = policy or LeasePolicy()
+        return self.run(
+            image, version=version, idle_policy=policy.idle_policy(),
+            run_payload=encode_payload(lease, task), max_duration=policy.max_duration(),
+            ingress=ingress, egress=egress, execution_role=execution_role,
+            client_token=client_token(lease),
+        )
 
     def get(self, microvm_id: str) -> Microvm:
         return Microvm.from_api(self.api.get_microvm(microvmIdentifier=microvm_id))

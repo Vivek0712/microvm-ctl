@@ -74,7 +74,12 @@ def bootstrap(cfg: PlaneConfig, prefix: str = "microvm-ctl") -> dict:
     logs_stmt = {
         "Effect": "Allow",
         "Action": ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"],
-        "Resource": f"arn:aws:logs:{cfg.region}:{account}:log-group:/aws/lambda/microvms/*",
+        # the service writes to /aws/lambda-microvms/<image>; the old prefix is kept
+        # so roles bootstrapped by earlier releases keep working
+        "Resource": [
+            f"arn:aws:logs:{cfg.region}:{account}:log-group:/aws/lambda-microvms/*",
+            f"arn:aws:logs:{cfg.region}:{account}:log-group:/aws/lambda/microvms/*",
+        ],
     }
     build_role = _ensure_role(
         iam,
