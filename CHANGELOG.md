@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 (2026-09-20)
+
+- Hook runtime: `GET /events` captures its cursor before the headers go out, so a log line written the moment a client connects is streamed instead of waiting for the next snapshot. Rebuild images to pick it up.
+
 ## 0.2.0 (2026-09-20)
 
 - Lease contract: `Lease`, `LeasePolicy`, `FleetManager.lease`, and `@app.on_lease` in the injected hook runtime, with completers for Step Functions task tokens, durable function callbacks, HTTP, SQS, and EventBridge; heartbeats, typed failures, closed-token detection, failure from `/terminate` mid-flight.

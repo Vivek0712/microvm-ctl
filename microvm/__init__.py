@@ -12,7 +12,7 @@ from microvm.images import ImageBuilder, ImageBuildError
 from microvm.lease import Lease, LeasePolicy
 from microvm.monitor import CostModel, FleetMonitor
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "microvm_client",
