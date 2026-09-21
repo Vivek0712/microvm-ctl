@@ -118,7 +118,8 @@ def test_two_shards_happy_path(fm):
         cb1 = runner.wait_for_callback(arn, name="job-1-0-callback", timeout=30)
         assert cb0 != cb1
         assert fm.plans == [(2, 2048, POLICY)]  # the plan step ran once, with the reconstructed policy
-        assert [launch["task"] for launch in fm.leases] == SHARDS
+        # map items launch concurrently, so compare as a set of shards, not in launch order
+        assert sorted((launch["task"] for launch in fm.leases), key=lambda t: t["i"]) == SHARDS
         assert all(launch["version"] == "3" and launch["policy"] == POLICY for launch in fm.leases)
         _succeed(runner, cb0, 1)
         _succeed(runner, cb1, 2)
