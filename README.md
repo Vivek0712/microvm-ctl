@@ -160,7 +160,7 @@ The four-part article series **Building on AWS Lambda MicroVMs** on the AWS Buil
 1. [Control and scale AWS Lambda MicroVMs with microvm-ctl](https://builder.aws.com/content/3JIDTpz0ZgatSBv24drra3gEod9/control-and-scale-aws-lambda-microvms-with-microvm-ctl): this plane and its measurements.
 2. [Seven workloads Lambda could never run, until MicroVMs](https://builder.aws.com/content/3JJ2oNWY9EsZzivMMx044cSlrFQ/seven-workloads-lambda-could-never-run-until-microvms): the first seven examples through build, run, cost, and gotchas.
 3. [A kernel for every customer: scaling AI agents to 1,000 tenants on AWS Lambda MicroVMs with microvm-ctl](https://builder.aws.com/content/3JJ7tASPSSUUTrcpWnWtxOuu8g3/a-kernel-for-every-customer-scaling-ai-agents-to-1000-tenants-on-aws-lambda-microvms-with-microvm-ctl): the multi-tenant finale with the decision guide.
-4. Hand a task to a MicroVM from anywhere (part 4, [source in awesome-microvm](https://github.com/Vivek0712/awesome-microvm/blob/main/blog/03-handoff.md), Builder Center link to follow): the lease contract, Step Functions, durable functions, your own controller, and leases at scale.
+4. [Hand a task to a MicroVM from anywhere: one lease, Step Functions, durable functions, or your own controller](https://builder.aws.com/content/3Jcx0VcEOq9QQBtqr59y4S8dVFC/hand-a-task-to-a-microvm-from-anywhere-one-lease-step-functions-durable-functions-or-your-own-controller): the lease contract, Step Functions, durable functions, your own controller, and leases at scale.
 
 The article sources and a long-form deep dive per example live under [awesome-microvm/blog](https://github.com/Vivek0712/awesome-microvm/tree/main/blog).
 
