@@ -164,6 +164,8 @@ The four-part article series **Building on AWS Lambda MicroVMs** on the AWS Buil
 
 The article sources and a long-form deep dive per example live under [awesome-microvm/blog](https://github.com/Vivek0712/awesome-microvm/tree/main/blog).
 
+Every lease scenario also runs live, on Step Functions and on a Lambda durable function, in [microvm-handoff-demo](https://github.com/Vivek0712/microvm-handoff-demo): nine scenarios on both orchestrators plus one lease from the CLI, with the execution histories, VM and orchestrator logs, benchmarks, and console screenshots checked in. Its first pass ran on 0.3.0 and found the two things that became 0.3.1: a typed failure whose VM Step Functions never terminated, and a 30 s heartbeat interval against a 30 s heartbeat timeout that lost a durable callback before the first heartbeat landed.
+
 ## Requirements and regions
 
 Python 3.9 or newer on the machine running the plane. The VMs themselves are ARM64 (Graviton) only, so audit binary wheels before you build an image. The service is available in `us-east-1`, `us-east-2`, `us-west-2`, `eu-west-1`, and `ap-northeast-1`.
