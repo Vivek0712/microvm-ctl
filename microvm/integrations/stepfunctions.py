@@ -103,8 +103,10 @@ def _lease_states(
     task_expr: str, heartbeat_s: int, lease_id_expr: str, client_token_expr: str,
     done_name: str = "Done",
 ) -> dict:
-    """The states of one lease: `name` -> Terminate -> Done, failures -> Reap ->
-    TerminateStale -> Failed. Used as the whole machine and as a Map item processor."""
+    """The states of one lease: `name` -> Terminate -> Done; a typed failure ->
+    OnLeaseError -> TerminateFailed (the VM the cause names) -> Reap -> TerminateStale ->
+    Failed; a timeout -> OnLeaseError -> Reap -> TerminateStale -> Failed. Used as the whole
+    machine and as a Map item processor."""
     max_duration = policy.max_duration()
     stale_ms = max_duration * 1000
     items_expr = (
@@ -118,7 +120,8 @@ def _lease_states(
             "Arguments": {
                 "ImageIdentifier": image_arn,
                 "ExecutionRoleArn": execution_role_arn,
-                "RunHookPayload": run_hook_payload_expr(region, heartbeat_s, task_expr, lease_id_expr),
+                "RunHookPayload": run_hook_payload_expr(
+                    region, policy.heartbeat_every(heartbeat_s), task_expr, lease_id_expr),
                 "IdlePolicy": _idle_policy_args(policy),
                 "MaximumDurationInSeconds": max_duration,
                 "ClientToken": _jsonata(f"$substring({client_token_expr}, 0, 128)"),
@@ -129,10 +132,29 @@ def _lease_states(
             "Catch": [{
                 "ErrorEquals": ["States.Timeout", "States.HeartbeatTimeout", "States.TaskFailed"],
                 "Assign": {"lease_error": _jsonata("$states.errorOutput")},
-                "Next": "Reap",
+                "Next": "OnLeaseError",
             }],
             "Assign": {"vm": _jsonata("$states.result.microvm_id")},
             "Next": "Terminate",
+        },
+        # A typed failure's cause is the VM's own payload and names it: terminate that VM at
+        # once. A timeout carries no id; that VM is bounded by MaximumDurationInSeconds
+        # (budget + slack) and Reap terminates anything older than that.
+        "OnLeaseError": {
+            "Type": "Choice",
+            "Choices": [{
+                "Condition": _jsonata("$contains($string($lease_error.Cause), '\"microvm_id\"')"),
+                "Next": "TerminateFailed",
+            }],
+            "Default": "Reap",
+        },
+        "TerminateFailed": {
+            "Type": "Task",
+            "Resource": TERMINATE,
+            "Arguments": {"MicrovmIdentifier": _jsonata("$parse($lease_error.Cause).microvm_id")},
+            "Retry": _retry_throttling(),
+            "Catch": [{"ErrorEquals": ["States.ALL"], "Next": "Reap"}],
+            "Next": "Reap",
         },
         "Terminate": {
             "Type": "Task",

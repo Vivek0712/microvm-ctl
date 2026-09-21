@@ -119,6 +119,15 @@ class LeasePolicy:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    def heartbeat_every(self, requested: int | float | None = None) -> int:
+        """The interval the VM should heartbeat at: the requested seconds (default 30), never
+        more than a third of `heartbeat_timeout_s` and never under 5 s. A heartbeat interval at
+        or above the timeout loses the lease before the first heartbeat lands, because the
+        orchestrator's clock starts before RunMicrovm returns."""
+        want = 30 if requested is None else float(requested)
+        ceiling = max(5.0, self.heartbeat_timeout_s / 3.0)
+        return int(max(5.0, min(want, ceiling)))
+
     def idle_policy(self):
         """No auto-resume: a leased VM that goes idle is finished, not dormant."""
         from microvm.fleet import IdlePolicy

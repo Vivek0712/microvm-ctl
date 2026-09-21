@@ -531,11 +531,11 @@ def cmd_lease_run(args):
         task = json.loads(args.task) if args.task else {}
     except ValueError as e:
         sys.exit(f"mvm lease run: --task is not valid JSON: {e}")
+    policy = _lease_policy(args)
     lease = Lease(kind=args.kind, token=args.token or "", region=cfg.region, target=args.target,
-                  heartbeat_s=args.heartbeat_every, id=args.id)
+                  heartbeat_s=policy.heartbeat_every(args.heartbeat_every), id=args.id)
     fm = FleetManager(cfg)
-    vm = fm.lease(args.image, lease, task, _lease_policy(args), version=args.version,
-                  execution_role=args.execution_role)
+    vm = fm.lease(args.image, lease, task, policy, version=args.version, execution_role=args.execution_role)
     console.print(
         f"[bold green]✓[/] {vm.microvm_id}  {_state(vm.state)}  "
         f"[link=https://{vm.endpoint}]{vm.endpoint}[/link]  lease {lease.kind}"
@@ -562,14 +562,14 @@ def cmd_lease_run_many(args, cfg):
         sys.exit(f"mvm lease run: --task-template is not valid JSON: {e}")
     if not isinstance(template, dict):
         sys.exit("mvm lease run: --task-template must be a JSON object")
+    policy = _lease_policy(args)
     leases, tasks = [], []
     for i in range(args.shards):
         token = args.token_template.replace("{i}", str(i)) if args.token_template else ""
         lease_id = args.id.replace("{i}", str(i)) if args.id else None
         leases.append(Lease(kind=kind, token=token, region=cfg.region, target=args.target,
-                            heartbeat_s=args.heartbeat_every, id=lease_id))
+                            heartbeat_s=policy.heartbeat_every(args.heartbeat_every), id=lease_id))
         tasks.append(_fill_template(template, i))
-    policy = _lease_policy(args)
     fm = FleetManager(cfg)
     baseline = _baseline_mib(args, cfg)
     plan = fm.plan(args.shards, baseline, policy)

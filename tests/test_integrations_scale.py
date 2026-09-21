@@ -11,7 +11,8 @@ from microvm.lease import LeasePolicy
 IMAGE = "arn:aws:lambda:us-east-1:123456789012:microvm-image:handoff-agent"
 ROLE = "arn:aws:iam::123456789012:role/agent"
 TOPIC = "arn:aws:sns:us-east-1:1:t"
-LEASE_STATES = {"Lease", "Terminate", "Reap", "TerminateStale", "Failed", "Done"}
+LEASE_STATES = {"Lease", "Terminate", "OnLeaseError", "TerminateFailed", "Reap", "TerminateStale", "Failed",
+                "Done"}
 
 def _indexed(expr: str) -> str:
     return "{% $map(" + expr + ", function($v, $i) { {'index': $i, 'task': $v} }) %}"

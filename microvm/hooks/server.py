@@ -514,7 +514,11 @@ class HookApp:
             self._deliver(ctx, completer, "failure", ctx.completion(error=err))
 
     def _heartbeat_loop(self, ctx: LeaseContext, completer, interval: float) -> None:
-        while not ctx._stop.wait(interval):
+        # The first heartbeat goes out at once: the orchestrator's heartbeat clock started before
+        # RunMicrovm returned, so waiting a full interval first can lose a tight lease.
+        first = True
+        while first or not ctx._stop.wait(interval):
+            first = False
             try:
                 with ctx._lock:  # serialized with _deliver: no heartbeat lands after the completion
                     if ctx.done:

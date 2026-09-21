@@ -91,7 +91,7 @@ def test_success_carries_the_lease_and_terminates_once(fm):
         launch = fm.leases[0]
         lease = launch["lease"]
         assert lease.kind == "durable" and lease.token == cb and lease.region == "us-east-1"
-        assert lease.heartbeat_s == 30 and lease.id
+        assert lease.heartbeat_s == 5 and lease.id  # clamped: timeout 2 s -> floor of 5 s
         assert launch["image"] == "handoff-agent" and launch["task"] == TASK
         assert launch["policy"].budget_s == 4 and launch["policy"].max_duration() == 124
         assert launch["version"] == "3" and launch["execution_role"] == "arn:aws:iam::1:role/agent"

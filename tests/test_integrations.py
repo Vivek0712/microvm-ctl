@@ -23,7 +23,8 @@ def test_asl_is_jsonata_and_json_serialisable():
     json.dumps(asl)  # no sets, no dataclasses
     assert asl["QueryLanguage"] == "JSONata"
     assert asl["StartAt"] == "Lease"
-    assert set(asl["States"]) == {"Lease", "Terminate", "Reap", "TerminateStale", "Failed", "Done"}
+    assert set(asl["States"]) == {"Lease", "Terminate", "OnLeaseError", "TerminateFailed", "Reap",
+                                  "TerminateStale", "Failed", "Done"}
     assert asl["States"]["Done"] == {"Type": "Succeed"}
     assert asl["States"]["Failed"]["Type"] == "Fail"
     assert asl["States"]["Failed"]["Error"] == "LeaseFailed"
@@ -51,7 +52,16 @@ def test_lease_state_resources_and_arguments():
     assert lease["Retry"][0]["BackoffRate"] == 2
     catch = lease["Catch"][0]
     assert catch["ErrorEquals"] == ["States.Timeout", "States.HeartbeatTimeout", "States.TaskFailed"]
-    assert catch["Next"] == "Reap"
+    assert catch["Next"] == "OnLeaseError"
+    asl = _asl()
+    choice = asl["States"]["OnLeaseError"]
+    assert choice["Type"] == "Choice" and choice["Default"] == "Reap"
+    assert choice["Choices"][0]["Next"] == "TerminateFailed"
+    assert "microvm_id" in choice["Choices"][0]["Condition"]
+    tf = asl["States"]["TerminateFailed"]
+    assert tf["Resource"] == asl["States"]["Terminate"]["Resource"]
+    assert "$parse($lease_error.Cause).microvm_id" in tf["Arguments"]["MicrovmIdentifier"]
+    assert tf["Next"] == "Reap" and tf["Catch"][0]["Next"] == "Reap"
     assert catch["Assign"] == {"lease_error": "{% $states.errorOutput %}"}
 
 

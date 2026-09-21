@@ -329,3 +329,24 @@ def test_package_exports():
 
     assert microvm.LeasePlan is LeasePlan and microvm.LeasePlanRejected is LeasePlanRejected
     assert microvm.FanoutLimit is FanoutLimit and microvm.plan_fanout is plan_fanout
+
+
+def test_heartbeat_every_clamps_to_a_third_of_the_timeout():
+    from microvm.lease import LeasePolicy
+
+    assert LeasePolicy().heartbeat_every() == 30            # 120 s timeout: the default 30 s stands
+    assert LeasePolicy(heartbeat_timeout_s=30).heartbeat_every() == 10
+    assert LeasePolicy(heartbeat_timeout_s=30).heartbeat_every(30) == 10
+    assert LeasePolicy(heartbeat_timeout_s=30).heartbeat_every(4) == 5
+    assert LeasePolicy(heartbeat_timeout_s=9).heartbeat_every() == 5
+    assert LeasePolicy(heartbeat_timeout_s=600).heartbeat_every(45) == 45
+
+
+def test_state_machine_and_durable_lease_use_the_clamped_interval():
+    from microvm.integrations.stepfunctions import lease_state_machine
+    from microvm.lease import LeasePolicy
+
+    asl = lease_state_machine(image_arn="arn:aws:lambda:us-east-1:1:microvm-image:x",
+                              execution_role_arn="arn:aws:iam::1:role/r",
+                              policy=LeasePolicy(heartbeat_timeout_s=30), region="us-east-1", heartbeat_s=30)
+    assert "'heartbeat_s': 10" in asl["States"]["Lease"]["Arguments"]["RunHookPayload"]

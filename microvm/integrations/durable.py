@@ -187,7 +187,7 @@ def lease_microvm(
         ),
     )
     lease = Lease(kind="durable", token=callback.callback_id, region=region,
-                  heartbeat_s=heartbeat_s, id=execution_name(context))
+                  heartbeat_s=policy.heartbeat_every(heartbeat_s), id=execution_name(context))
     policy_dict = {"budget_s": policy.budget_s, "heartbeat_timeout_s": policy.heartbeat_timeout_s,
                    "slack_s": policy.slack_s}
     launch_once = StepConfig(step_semantics=StepSemantics.AT_MOST_ONCE_PER_RETRY,

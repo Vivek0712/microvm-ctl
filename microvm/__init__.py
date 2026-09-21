@@ -12,7 +12,7 @@ from microvm.images import ImageBuilder, ImageBuildError
 from microvm.lease import FanoutLimit, Lease, LeasePlan, LeasePlanRejected, LeasePolicy, plan_fanout
 from microvm.monitor import CostModel, FleetMonitor
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 __all__ = [
     "microvm_client",

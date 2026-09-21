@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 (2026-09-21)
+
+Found by running every lease scenario live from Step Functions and a durable function ([microvm-handoff-demo](https://github.com/Vivek0712/microvm-handoff-demo)).
+
+- Step Functions: a typed lease failure now terminates the VM it came from. The caught cause is the VM's own payload and names `microvm_id`; the generated machine gains `OnLeaseError` (a Choice) and `TerminateFailed` before `Reap`. A timeout still carries no id: that VM is bounded by `MaximumDurationInSeconds` (budget plus slack) and `TerminateStale` reaps anything older.
+- `LeasePolicy.heartbeat_every(requested)`: the VM's heartbeat interval is clamped to at most a third of `heartbeat_timeout_s` (never under 5 s) by `lease_state_machine`, `durable.lease_microvm`, and `mvm lease run`. With `heartbeat_timeout_s=30` and the default 30 s interval, a durable callback timed out at 30.1 s before the first heartbeat landed.
+- Hook runtime: the first heartbeat goes out as soon as the lease is accepted, then every `heartbeat_s`.
+
 ## 0.3.0 (2026-09-20)
 
 - Leases at scale: `LeasePolicy` gains `max_concurrency`, `max_vm_seconds`, `approval_usd`, and `from_env()`; `FleetManager.fanout_limit`, `plan` (`LeasePlan`, `LeasePlanRejected`), and `lease_many`; `ImageBuilder.baseline_mib`.
