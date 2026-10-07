@@ -468,7 +468,8 @@ class Fleet:
                            "ms": round((time.time() - started) * 1000, 1), "body": payload}
                 except Exception as e:  # one failed request must not stop the batch
                     out = {"index": i, "microvm_id": microvm_id, "status": None,
-                           "ms": round((time.time() - started) * 1000, 1), "error": f"{type(e).__name__}: {e}"}
+                           "ms": round((time.time() - started) * 1000, 1),
+                           "error": f"{type(e).__name__}: {e}"}
                 with lock:
                     results[i] = out
                 if on_result:

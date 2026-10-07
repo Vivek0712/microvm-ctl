@@ -246,13 +246,15 @@ def cmd_dispatch(args):
     by_vm: dict = {}
     for r in results:
         by_vm.setdefault(r["microvm_id"], []).append(r)
-    t = Table(title=f"{len(results)} requests in {wall:.2f} s ({len(results) / wall:.1f}/s), {args.per_vm} in flight per VM")
+    rate = len(results) / wall
+    t = Table(title=f"{len(results)} requests in {wall:.2f} s ({rate:.1f}/s), {args.per_vm} in flight per VM")
     for col in ("microVM", "requests", "ok", "failed", "p50 ms", "max ms"):
         t.add_column(col)
     for vid, rs in sorted(by_vm.items()):
         lat = sorted(r["ms"] for r in rs)
         ok = sum(1 for r in rs if r["status"] and r["status"] < 400)
-        t.add_row(vid, str(len(rs)), str(ok), str(len(rs) - ok), f"{lat[len(lat) // 2]:.0f}", f"{lat[-1]:.0f}")
+        p50 = lat[len(lat) // 2]
+        t.add_row(vid, str(len(rs)), str(ok), str(len(rs) - ok), f"{p50:.0f}", f"{lat[-1]:.0f}")
     console.print(t)
     if any(not r["status"] or r["status"] >= 400 for r in results):
         sys.exit(1)
