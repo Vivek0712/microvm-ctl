@@ -76,6 +76,10 @@ Converges the set of active (PENDING, RUNNING, SUSPENDING, SUSPENDED) microVMs o
 
 Terminates every active microVM of an image.
 
+### `mvm dispatch IMAGE PATH [-d JSON -n N | --bodies FILE] [--per-vm 4] [--out FILE]`
+
+Sends one request per body to the RUNNING members of an image, `--per-vm` in flight on each, and prints one row per VM: requests, ok, failed, p50 and max milliseconds. `-d` with `-n` repeats one body; `--bodies` reads one JSON body per line. `--out` writes every result as JSON Lines. Exits 1 if any request failed. See `Fleet.dispatch` in the [SDK reference](sdk.md).
+
 ## Execution plane
 
 ### `mvm call ID PATH [-X METHOD] [-d DATA] [--port PORT]`

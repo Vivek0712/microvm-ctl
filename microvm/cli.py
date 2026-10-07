@@ -9,6 +9,7 @@
     mvm scale IMAGE N                      converge fleet to N
     mvm suspend|resume|terminate ID...     lifecycle control
     mvm drain IMAGE                        terminate the whole fleet
+    mvm dispatch IMAGE /path -d '{}' -n 64 spread requests over the warm fleet, --per-vm in flight each
     mvm call ID /path [-X POST -d '{}']    authenticated request into the VM
     mvm status ID | watch ID               job telemetry from the hook runtime (/status, /events)
     mvm watch --image NAME                 one live table for every leased VM of an image
@@ -224,6 +225,37 @@ def cmd_scale(args):
 def cmd_drain(args):
     n = Fleet(FleetManager(_cfg(args)), args.image).drain()
     console.print(f"[bold green]✓[/] terminated {n} microVMs of [cyan]{args.image}[/]")
+
+
+def cmd_dispatch(args):
+    if args.bodies:
+        with open(args.bodies) as f:
+            bodies = [json.loads(line) for line in f if line.strip()]
+    else:
+        bodies = [json.loads(args.data or "{}")] * args.n
+    fleet = Fleet(FleetManager(_cfg(args)), args.image)
+    started = time.time()
+    with console.status(f"[bold]dispatching {len(bodies)} requests over [cyan]{args.image}[/]…"):
+        results = fleet.dispatch(args.path, bodies, per_vm=args.per_vm, method=args.method, port=args.port,
+                                 timeout=args.timeout)
+    wall = time.time() - started
+    if args.out:
+        with open(args.out, "w") as f:
+            for r in results:
+                f.write(json.dumps(r, default=str) + "\n")
+    by_vm: dict = {}
+    for r in results:
+        by_vm.setdefault(r["microvm_id"], []).append(r)
+    t = Table(title=f"{len(results)} requests in {wall:.2f} s ({len(results) / wall:.1f}/s), {args.per_vm} in flight per VM")
+    for col in ("microVM", "requests", "ok", "failed", "p50 ms", "max ms"):
+        t.add_column(col)
+    for vid, rs in sorted(by_vm.items()):
+        lat = sorted(r["ms"] for r in rs)
+        ok = sum(1 for r in rs if r["status"] and r["status"] < 400)
+        t.add_row(vid, str(len(rs)), str(ok), str(len(rs) - ok), f"{lat[len(lat) // 2]:.0f}", f"{lat[-1]:.0f}")
+    console.print(t)
+    if any(not r["status"] or r["status"] >= 400 for r in results):
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------- execution plane
@@ -723,6 +755,19 @@ def main(argv: list[str] | None = None):
     d = sub.add_parser("drain", help="terminate every microVM of an image")
     d.add_argument("image")
     d.set_defaults(fn=cmd_drain)
+
+    dp = sub.add_parser("dispatch", help="spread requests over the RUNNING members of an image")
+    dp.add_argument("image")
+    dp.add_argument("path")
+    dp.add_argument("-X", "--method", default="POST")
+    dp.add_argument("-d", "--data", help="one JSON body, sent -n times")
+    dp.add_argument("-n", type=int, default=1, help="how many times to send --data")
+    dp.add_argument("--bodies", help="a JSON Lines file, one request body per line")
+    dp.add_argument("--per-vm", type=int, default=4, help="requests in flight per VM")
+    dp.add_argument("--port", type=int, default=8080)
+    dp.add_argument("--timeout", type=float, default=300)
+    dp.add_argument("--out", help="write every result as JSON Lines")
+    dp.set_defaults(fn=cmd_dispatch)
 
     c = sub.add_parser("call", help="authenticated request into a microVM")
     c.add_argument("id")

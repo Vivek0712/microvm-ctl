@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 (2026-10-08)
+
+Found by running Strands Box fleets on Lambda MicroVMs ([strands-box-microvm-ctl](https://github.com/Vivek0712/strands-box-microvm-ctl)), where one task takes about 100 ms and a VM launch about 4 s.
+
+- `Fleet.dispatch(path, bodies, per_vm=4)`: send one request per body to the fleet's RUNNING members and get the results back in order. Each member runs `per_vm` workers that pull from one shared queue, so a slower VM takes fewer items; a failed request is recorded with its error and the rest carry on. `on_result` streams each result as it lands.
+- `mvm dispatch IMAGE /path -d '{...}' -n 64 --per-vm 4` (or `--bodies file.jsonl`, `--out results.jsonl`): the same from the terminal, with a per-VM summary table.
+- `Fleet` remembers the VMs it terminated and leaves them out of `members()`. `ListMicrovms` keeps reporting a terminated VM in its old state for about a second, so a `size()` right after a scale-down counted the victim and a `drain()` terminated it twice.
+
 ## 0.3.1 (2026-09-21)
 
 Found by running every lease scenario live from Step Functions and a durable function ([microvm-handoff-demo](https://github.com/Vivek0712/microvm-handoff-demo)).

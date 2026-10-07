@@ -84,3 +84,67 @@ def test_run_params_carries_client_token(monkeypatch):
     assert params["runHookPayload"] == '{"callback_id": "abc"}'
     assert params["maximumDurationInSeconds"] == 900
     assert "clientToken" not in fm.run_params("img")
+
+
+def test_scale_down_victim_is_not_counted_while_list_still_shows_it():
+    # ListMicrovms reports a terminated VM in its old state for a moment; the fleet must not count it.
+    members = [_vm(1, "RUNNING", 600), _vm(2, "SUSPENDED", 300), _vm(3, "RUNNING", 10)]
+    fm = FakeManager(members)
+    fleet = Fleet(fm, "img")
+    fleet.scale_to(2)
+    assert fm.terminated == ["vm-2"]
+    assert fleet.size() == 2
+    assert fleet.drain() == 2
+    assert sorted(fm.terminated) == ["vm-1", "vm-2", "vm-3"]
+
+
+class FakeResponse:
+    def __init__(self, status, payload):
+        self.status_code, self._payload = status, payload
+
+    def json(self):
+        return self._payload
+
+
+class FakeClient:
+    def __init__(self, microvm_id, log, fail_on=None, delay=0.0):
+        self.microvm_id, self.log, self.fail_on, self.delay = microvm_id, log, fail_on, delay
+
+    def request(self, method, path, json=None, timeout=None, port=None):
+        import time as _t
+        _t.sleep(self.delay)
+        self.log.append((self.microvm_id, method, path, json))
+        if self.fail_on is not None and json == self.fail_on:
+            raise ConnectionError("boom")
+        return FakeResponse(200, {"echo": json, "vm": self.microvm_id})
+
+
+def test_dispatch_spreads_bodies_over_running_members_and_keeps_order():
+    fm = FakeManager([_vm(1, "RUNNING", 60), _vm(2, "RUNNING", 60), _vm(3, "SUSPENDED", 60)])
+    log = []
+    fleet = Fleet(fm, "img")
+    seen = []
+    results = fleet.dispatch("/task", [{"n": i} for i in range(10)], per_vm=2,
+                             client_factory=lambda vm_id: FakeClient(vm_id, log, delay=0.01),
+                             on_result=seen.append)
+    assert [r["index"] for r in results] == list(range(10))
+    assert [r["body"]["echo"] for r in results] == [{"n": i} for i in range(10)]
+    assert {r["microvm_id"] for r in results} == {"vm-1", "vm-2"}  # the SUSPENDED member gets nothing
+    assert all(m == "POST" and p == "/task" for _, m, p, _ in log)
+    assert len(seen) == 10
+
+
+def test_dispatch_records_a_failed_request_and_finishes_the_rest():
+    fm = FakeManager([_vm(1, "RUNNING", 60)])
+    fleet = Fleet(fm, "img")
+    results = fleet.dispatch("/task", [{"n": 0}, {"n": 1}, {"n": 2}], per_vm=1,
+                             client_factory=lambda vm_id: FakeClient(vm_id, [], fail_on={"n": 1}))
+    assert results[0]["status"] == 200 and results[2]["status"] == 200
+    assert results[1]["status"] is None and "ConnectionError" in results[1]["error"]
+
+
+def test_dispatch_needs_a_running_member():
+    import pytest
+    fleet = Fleet(FakeManager([_vm(1, "SUSPENDED", 60)]), "img")
+    with pytest.raises(RuntimeError, match="no RUNNING members"):
+        fleet.dispatch("/task", [{}], client_factory=lambda vm_id: None)

@@ -12,9 +12,11 @@ retried with jittered backoff, so `scale_to(50)` is safe to call in one shot.
 from __future__ import annotations
 
 import concurrent.futures as futures
+import queue
+import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 from microvm.client import image_arn, microvm_client
 from microvm.config import TPS, PlaneConfig
@@ -311,14 +313,22 @@ class Fleet:
     _pool: futures.ThreadPoolExecutor = field(
         default_factory=lambda: futures.ThreadPoolExecutor(max_workers=Fleet.MAX_WORKERS), repr=False
     )
+    #: VMs this fleet has asked to terminate. ListMicrovms keeps reporting a terminated VM in its old
+    #: state for about a second, so without this a size() right after a scale-down counts the victim
+    #: and a drain terminates it twice.
+    _terminated: set = field(default_factory=set, repr=False)
 
     # -- observation -------------------------------------------------------------
     def members(self) -> list[Microvm]:
         return [
             vm
             for vm in self.manager.list(self.image, self.version)
-            if vm.state in ACTIVE_STATES
+            if vm.state in ACTIVE_STATES and vm.microvm_id not in self._terminated
         ]
+
+    def _terminate(self, microvm_id: str) -> None:
+        self.manager.terminate(microvm_id)
+        self._terminated.add(microvm_id)
 
     def size(self) -> int:
         return len(self.members())
@@ -345,7 +355,7 @@ class Fleet:
             return launched
         if delta < 0:
             for vm in self.scale_down_victims(current, -delta):
-                self.manager.terminate(vm.microvm_id)
+                self._terminate(vm.microvm_id)
         return []
 
     @staticmethod
@@ -384,7 +394,7 @@ class Fleet:
     def drain(self) -> int:
         """Terminate every member of the fleet."""
         vms = self.members()
-        list(self._pool.map(lambda v: self.manager.terminate(v.microvm_id), vms))
+        list(self._pool.map(lambda v: self._terminate(v.microvm_id), vms))
         return len(vms)
 
     # -- reaper ------------------------------------------------------------------
@@ -396,6 +406,81 @@ class Fleet:
         for vm in self.members():
             started = vm.started_epoch
             if started and now - started > max_age_seconds:
-                self.manager.terminate(vm.microvm_id)
+                self._terminate(vm.microvm_id)
                 reaped.append(vm.microvm_id)
         return reaped
+
+    # -- work distribution -------------------------------------------------------
+    def dispatch(
+        self,
+        path: str,
+        bodies: list,
+        *,
+        per_vm: int = 4,
+        method: str = "POST",
+        port: int = 8080,
+        timeout: float = 300,
+        client_factory: Callable[[str], Any] | None = None,
+        on_result: Callable[[dict], None] | None = None,
+    ) -> list[dict]:
+        """Send one request per body to the fleet's RUNNING members and return the results in order.
+
+        Each RUNNING member gets `per_vm` workers that pull from one shared queue, so a slow VM takes
+        fewer items and no VM ever holds more than `per_vm` requests in flight. This is the warm-fleet
+        path: hundreds of short tasks over VMs that are already up, where a lease per task would pay a
+        launch per task. A request that raises is recorded with its error and does not stop the others.
+
+        Each result is {"index", "microvm_id", "status", "ms", "body"} or, on an exception,
+        {"index", "microvm_id", "status": None, "ms", "error"}. `on_result` is called with each result
+        as it lands, from a worker thread.
+        """
+        if per_vm < 1:
+            raise ValueError("per_vm must be at least 1")
+        running = [vm for vm in self.members() if vm.state == "RUNNING"]
+        if not running:
+            raise RuntimeError(f"fleet {self.image} has no RUNNING members to dispatch to")
+        if client_factory is None:
+            from microvm.endpoint import EndpointClient
+
+            def client_factory(microvm_id: str):
+                return EndpointClient(self.manager.cfg, microvm_id, ports=[port])
+
+        work: queue.Queue = queue.Queue()
+        for i, body in enumerate(bodies):
+            work.put((i, body))
+        results: list = [None] * len(bodies)
+        lock = threading.Lock()
+
+        def worker(microvm_id: str, client) -> None:
+            while True:
+                try:
+                    i, body = work.get_nowait()
+                except queue.Empty:
+                    return
+                started = time.time()
+                try:
+                    resp = client.request(method, path, json=body, timeout=timeout, port=port)
+                    try:
+                        payload = resp.json()
+                    except ValueError:
+                        payload = resp.text
+                    out = {"index": i, "microvm_id": microvm_id, "status": resp.status_code,
+                           "ms": round((time.time() - started) * 1000, 1), "body": payload}
+                except Exception as e:  # one failed request must not stop the batch
+                    out = {"index": i, "microvm_id": microvm_id, "status": None,
+                           "ms": round((time.time() - started) * 1000, 1), "error": f"{type(e).__name__}: {e}"}
+                with lock:
+                    results[i] = out
+                if on_result:
+                    on_result(out)
+
+        threads = []
+        for vm in running:
+            client = client_factory(vm.microvm_id)
+            for _ in range(per_vm):
+                t = threading.Thread(target=worker, args=(vm.microvm_id, client), daemon=True)
+                t.start()
+                threads.append(t)
+        for t in threads:
+            t.join()
+        return results
